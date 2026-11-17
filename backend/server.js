@@ -1,8 +1,10 @@
 import cors from "cors";
 import dotenv from "dotenv";
 import express from "express";
+import http from "http"; // 1. HTTP module import किया
 import mongoose from "mongoose";
 import dns from "node:dns";
+import { Server } from "socket.io"; // 2. Socket.io import किया
 
 // Force Node.js to use Google DNS to bypass local ISP/Hotspot SRV blocks
 dns.setServers(["8.8.8.8", "8.8.4.4"]);
@@ -13,7 +15,7 @@ dotenv.config();
 // Database
 import connectDB from "./config/db.js";
 
-// Routes (Pizza Delivery App Routes - अपने प्रोजेक्ट के हिसाब से रखें)
+// Routes
 import authRoutes from "./routes/authRoutes.js";
 import orderRoutes from "./routes/orderRoutes.js";
 import pizzaRoutes from "./routes/pizzaRoutes.js";
@@ -52,9 +54,29 @@ console.log("EMAIL_PASS:", process.env.EMAIL_PASS ? "YES ✅" : "NO ❌");
 console.log("=================================\n");
 
 // ========================================
-// EXPRESS APP & MIDDLEWARE
+// EXPRESS APP, HTTP SERVER & SOCKET.IO
 // ========================================
 const app = express();
+const server = http.createServer(app); // 3. Express app को HTTP server के साथ रैप किया
+
+const io = new Server(server, {
+  cors: {
+    origin: "*", // फ्रंटएंड कनेक्शन के लिए सभी ओरिजिन अनुमति
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  },
+});
+
+// Socket.io Connection Listener
+io.on("connection", (socket) => {
+  console.log(`⚡ A user connected via Socket.io: ${socket.id}`);
+
+  socket.on("disconnect", () => {
+    console.log(`🔌 User disconnected: ${socket.id}`);
+  });
+});
+
+// App को io एक्सेस देने के लिए (अगर आगे किसी कंट्रोलर में लाइव आर्डर स्टेटस भेजना हो)
+app.set("io", io);
 
 app.use(
   cors({
@@ -67,7 +89,7 @@ app.use(
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// Request Logger (हर API रिक्वेस्ट और उसका स्टेटस दिखाने के लिए)
+// Request Logger
 app.use((req, res, next) => {
   console.log(`➡️  [${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
   next();
@@ -151,7 +173,6 @@ const runMongoDiagnostics = async () => {
     console.log("ACTIVE DATABASE:", mongoose.connection.name);
     console.log("HOST:", mongoose.connection.host);
 
-    // List all databases on the cluster/server
     const adminDb = db.admin();
     const dbsList = await adminDb.listDatabases();
     console.log(
@@ -159,7 +180,6 @@ const runMongoDiagnostics = async () => {
       dbsList.databases.map((d) => `${d.name} (${(d.sizeOnDisk / 1024).toFixed(2)} KB)`)
     );
 
-    // List all collections in current database
     const collections = await db.listCollections().toArray();
     console.log(
       "COLLECTIONS IN CURRENT DB:",
@@ -167,7 +187,6 @@ const runMongoDiagnostics = async () => {
     );
     console.log("---------------------------------");
 
-    // Count documents in every collection
     for (const collection of collections) {
       const count = await db.collection(collection.name).countDocuments();
       console.log(`📁 COLLECTION [${collection.name}]: ${count} documents`);
@@ -193,11 +212,11 @@ const startServer = async () => {
 
     console.log("✅ MongoDB connected successfully!");
 
-    // Run diagnostics to list all DBs & collections
+    // Run diagnostics
     await runMongoDiagnostics();
 
-    // Start Express server
-    app.listen(PORT, "0.0.0.0", () => {
+    // Start HTTP server (instead of app.listen)
+    server.listen(PORT, "0.0.0.0", () => {
       console.log("---------------------------------");
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`🌐 Local URL: http://localhost:${PORT}`);
