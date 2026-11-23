@@ -29,15 +29,16 @@ export const registerUser = async (req, res) => {
       verificationToken,
     });
 
-    const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
-    const verifyUrl = `${clientUrl}/verify-email/${verificationToken}`;
+    // ✅ सीधा बैकएंड API लिंक ताकि क्लिक करते ही डेटाबेस अपडेट हो जाए
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+    const verifyUrl = `${backendUrl}/api/auth/verify/${verificationToken}`;
 
     await sendEmail({
       email: user.email,
-      subject: 'Verify Your Pizza House Account 🍕',
+      subject: 'Verify Your PizzaZone Account 🍕',
       html: `
         <div style="font-family:Arial,sans-serif;max-width:500px;margin:auto;padding:25px;border:1px solid #e2e8f0;border-radius:12px;text-align:center;">
-          <h2 style="color:#e63946;margin-bottom:10px;">Welcome to Pizza House, ${user.name}! 🍕</h2>
+          <h2 style="color:#e63946;margin-bottom:10px;">Welcome to PizzaZone, ${user.name}! 🍕</h2>
           <p style="color:#2b2d42;font-size:15px;">Tap the button below to verify your email address and activate your account:</p>
           <a href="${verifyUrl}" style="display:inline-block;margin:20px 0;padding:14px 28px;background-color:#e63946;color:#ffffff;text-decoration:none;border-radius:8px;font-size:16px;font-weight:bold;">
             Verify Email
@@ -55,23 +56,44 @@ export const registerUser = async (req, res) => {
   }
 };
 
-// @desc    Verify Email via Token
+// @desc    Verify Email via Token (Shows clean confirmation page in new tab)
 // @route   GET /api/auth/verify/:token
 export const verifyEmail = async (req, res) => {
   try {
     const user = await User.findOne({ verificationToken: req.params.token });
+    const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
 
     if (!user) {
-      return res.status(400).json({ message: 'Invalid or already used verification link.' });
+      return res.status(400).send(`
+        <div style="font-family:Arial,sans-serif;text-align:center;margin-top:80px;">
+          <h1 style="color:#e63946;">❌ Invalid or Expired Link</h1>
+          <p style="color:#555;">This verification link has already been used or is invalid.</p>
+          <a href="${clientUrl}/login" style="display:inline-block;margin-top:20px;padding:12px 24px;background:#2b2d42;color:#fff;text-decoration:none;border-radius:6px;">Go to Login</a>
+        </div>
+      `);
     }
 
+    // ✅ डेटाबेस में वेरीफाइड स्टेटस अपडेट करें
     user.isVerified = true;
     user.verificationToken = undefined;
     await user.save();
 
-    res.status(200).json({ message: 'Verified Successful! You can now log in.' });
+    // ✅ नए टैब में सुंदर सक्सेस स्क्रीन दिखाएं
+    res.status(200).send(`
+      <div style="font-family:Arial,sans-serif;max-width:450px;margin:80px auto;padding:35px;border:1px solid #e2e8f0;border-radius:12px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.08);">
+        <div style="font-size:60px;margin-bottom:10px;">✅</div>
+        <h1 style="color:#27ae60;margin-bottom:10px;">Email Verified Successfully!</h1>
+        <p style="color:#444;font-size:16px;line-height:1.5;">
+          Thank you, <b>${user.name}</b>! Your account is now active.
+        </p>
+        <a href="${clientUrl}/login" target="_blank" style="display:inline-block;margin-top:25px;padding:14px 30px;background-color:#e63946;color:#ffffff;text-decoration:none;border-radius:8px;font-size:16px;font-weight:bold;">
+          Click Here to Login →
+        </a>
+      </div>
+    `);
+    
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(500).send(`<h2>Server Error: ${error.message}</h2>`);
   }
 };
 

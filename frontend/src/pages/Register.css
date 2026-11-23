@@ -1,0 +1,513 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800;900&display=swap');
+
+.register-page {
+  --primary: #ed4b23;
+  --primary-dark: #c93417;
+  --ink: #1e222f;
+  --muted: #6b7280;
+  --border: rgba(234, 220, 210, 0.75);
+  --glass-bg: rgba(255, 250, 246, 0.56);
+  --surface-warm: #fffaf6;
+
+  min-height: 100dvh;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  background: var(--surface-warm);
+  color: var(--ink);
+  font-family: 'Poppins', system-ui, -apple-system, sans-serif;
+  box-sizing: border-box;
+  overflow-x: clip;
+}
+
+.register-page *,
+.register-page *::before,
+.register-page *::after {
+  box-sizing: border-box;
+}
+
+@keyframes registerFloatPizza {
+  0%, 100% {
+    transform: translateY(0) rotate(-4deg);
+  }
+  50% {
+    transform: translateY(-10px) rotate(4deg);
+  }
+}
+
+/* =====================================
+   LEFT BRAND / HERO PANEL
+===================================== */
+
+.register-page .register-left {
+  position: relative;
+  overflow: hidden;
+  padding: clamp(28px, 4vw, 48px) clamp(24px, 5vw, 64px);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: linear-gradient(135deg, #865555 0%, #2c2020 56%, #1c1613 100%);
+  color: #ffffff;
+}
+
+.register-page .register-left::before,
+.register-page .register-left::after {
+  content: '';
+  position: absolute;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.register-page .register-left::before {
+  width: 360px;
+  height: 360px;
+  top: -130px;
+  right: -130px;
+}
+
+.register-page .register-left::after {
+  width: 260px;
+  height: 260px;
+  bottom: -100px;
+  left: -80px;
+}
+
+.register-page .brand-logo {
+  position: relative;
+  z-index: 2;
+  font-size: clamp(22px, 2vw, 26px);
+  font-weight: 900;
+  color: #ffffff;
+}
+
+.register-page .brand-logo span {
+  color: #ff9d5c;
+}
+
+.register-page .hero-content {
+  position: relative;
+  z-index: 2;
+  max-width: 480px;
+  margin: auto 0;
+  padding: 20px 0;
+  background: transparent;
+}
+
+.register-page .hero-tag {
+  display: inline-block;
+  padding: 6px 14px;
+  margin-bottom: 16px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  color: #ffd7bc;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+}
+
+.register-page .hero-content h1 {
+  margin: 0 0 14px;
+  font-size: clamp(30px, 3.4vw, 46px);
+  font-weight: 900;
+  line-height: 1.15;
+  color: #ffffff;
+}
+
+.register-page .hero-content h1 span {
+  display: block;
+  color: #ff9d5c;
+}
+
+.register-page .hero-content p {
+  max-width: 430px;
+  margin: 0 0 20px;
+  color: rgba(255, 245, 240, 0.88);
+  font-size: clamp(13px, 1.1vw, 14px);
+  line-height: 1.75;
+}
+
+.register-page .pizza-image {
+  font-size: clamp(86px, 9.5vw, 132px);
+  text-align: center;
+  margin: 12px 0 18px;
+  filter: drop-shadow(0 16px 20px rgba(0, 0, 0, 0.25));
+  animation: registerFloatPizza 3.4s ease-in-out infinite;
+}
+
+.register-page .hero-bottom {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.register-page .hero-bottom > span {
+  padding: 8px 15px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+/* =====================================
+   RIGHT PANEL (UNIFIED TRANSPARENT)
+===================================== */
+
+.register-page .register-right {
+  position: relative;
+  overflow: hidden;
+  padding: clamp(24px, 4vw, 40px) clamp(16px, 4vw, 48px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 20% 18%, rgba(255, 138, 76, 0.14), transparent 44%),
+    radial-gradient(circle at 82% 82%, rgba(237, 75, 35, 0.11), transparent 48%),
+    var(--surface-warm);
+}
+
+.register-page .register-card {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: 440px;
+  padding: clamp(24px, 3vw, 34px) clamp(20px, 2.8vw, 30px);
+  border-radius: 24px;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  box-shadow: 0 14px 34px rgba(30, 34, 47, 0.05);
+}
+
+.register-page .register-card form,
+.register-page .form-heading,
+.register-page .form-group,
+.register-page .verified-actions,
+.register-page .login-link,
+.register-page .register-footer {
+  background: transparent;
+}
+
+.register-page .mobile-logo {
+  display: none;
+  margin-bottom: 14px;
+  font-size: 22px;
+  font-weight: 900;
+  color: var(--ink);
+  text-align: center;
+}
+
+.register-page .form-heading {
+  margin-bottom: 20px;
+}
+
+.register-page .welcome-text {
+  display: inline-block;
+  padding: 4px 12px;
+  margin-bottom: 10px;
+  border-radius: 999px;
+  background: rgba(255, 242, 234, 0.78);
+  color: var(--primary);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+}
+
+.register-page .form-heading h2 {
+  margin: 0 0 6px;
+  font-size: clamp(22px, 2.2vw, 26px);
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.register-page .form-heading p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.register-page .register-error,
+.register-page .register-success {
+  padding: 11px 14px;
+  border-radius: 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.register-page .register-error {
+  color: #dc2626;
+  background: rgba(254, 242, 242, 0.85);
+  border: 1px solid #fecaca;
+}
+
+.register-page .register-success {
+  color: #15803d;
+  background: rgba(240, 253, 244, 0.85);
+  border: 1px solid #bbf7d0;
+}
+
+.register-page .form-group {
+  margin-bottom: 16px;
+}
+
+.register-page .form-group label {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #374151;
+}
+
+.register-page .input-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 48px;
+  padding: 0 14px;
+  border: 1.5px solid rgba(230, 216, 207, 0.85);
+  border-radius: 12px;
+  background: rgba(255, 250, 246, 0.65);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+
+.register-page .input-box:focus-within {
+  border-color: var(--primary);
+  background: rgba(255, 250, 246, 0.92);
+  box-shadow: 0 0 0 4px rgba(237, 75, 35, 0.12);
+}
+
+.register-page .input-box > span {
+  font-size: 15px;
+  line-height: 1;
+  flex-shrink: 0;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.register-page .input-box input,
+.register-page .input-box select {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.register-page .input-box input::placeholder {
+  color: #9ca3af;
+}
+
+.register-page .input-box select {
+  cursor: pointer;
+}
+
+.register-page .password-toggle {
+  padding: 5px 10px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(255, 242, 234, 0.82);
+  color: var(--primary);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.register-page .register-btn {
+  width: 100%;
+  height: 48px;
+  margin-top: 6px;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(115deg, var(--primary) 0%, #ff7a2f 100%);
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  box-shadow: 0 10px 22px rgba(237, 75, 35, 0.26);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.register-page .register-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 26px rgba(237, 75, 35, 0.34);
+}
+
+.register-page .register-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.register-page .verified-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.register-page .secondary-btn {
+  width: 100%;
+  height: 44px;
+  border-radius: 12px;
+  border: 1.5px solid rgba(230, 216, 207, 0.85);
+  background: rgba(255, 250, 246, 0.72);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.register-page .login-link {
+  margin-top: 20px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.register-page .login-link a {
+  color: var(--primary);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.register-page .login-link a:hover {
+  text-decoration: underline;
+}
+
+.register-page .register-footer {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(241, 231, 224, 0.75);
+  text-align: center;
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+/* =====================================
+   IPAD & TABLET (769px - 1024px)
+===================================== */
+
+@media (max-width: 1024px) and (min-width: 769px) {
+  .register-page {
+    grid-template-columns: 0.92fr 1.08fr;
+  }
+
+  .register-page .register-left {
+    padding: 32px 28px;
+  }
+
+  .register-page .hero-content h1 {
+    font-size: 32px;
+  }
+
+  .register-page .pizza-image {
+    font-size: 76px;
+    margin: 10px 0 14px;
+  }
+
+  .register-page .register-right {
+    padding: 28px 24px;
+  }
+
+  .register-page .register-card {
+    max-width: 410px;
+    padding: 28px 24px;
+  }
+}
+
+/* =====================================
+   MOBILE & SMALL TABLET (<= 768px)
+===================================== */
+
+@media (max-width: 768px) {
+  .register-page {
+    grid-template-columns: 1fr;
+  }
+
+  .register-page .register-left {
+    display: none;
+  }
+
+  .register-page .mobile-logo {
+    display: block;
+  }
+
+  .register-page .register-right {
+    min-height: 100dvh;
+    padding: 24px 16px;
+    align-items: center;
+  }
+
+  .register-page .register-card {
+    max-width: 440px;
+    padding: 26px 20px;
+    border-radius: 20px;
+  }
+
+  .register-page .input-box input,
+  .register-page .input-box select {
+    font-size: 16px;
+  }
+}
+
+/* =====================================
+   SMALL MOBILE (<= 480px)
+===================================== */
+
+@media (max-width: 480px) {
+  .register-page .register-right {
+    padding: 18px 12px;
+  }
+
+  .register-page .register-card {
+    padding: 22px 16px;
+    border-radius: 18px;
+  }
+
+  .register-page .form-heading {
+    margin-bottom: 16px;
+  }
+
+  .register-page .form-heading h2 {
+    font-size: 21px;
+  }
+
+  .register-page .form-group {
+    margin-bottom: 14px;
+  }
+
+  .register-page .input-box {
+    height: 46px;
+    padding: 0 12px;
+    gap: 8px;
+  }
+
+  .register-page .register-btn {
+    height: 46px;
+    font-size: 13.5px;
+  }
+
+  .register-page .login-link {
+    margin-top: 16px;
+    font-size: 12.5px;
+  }
+}

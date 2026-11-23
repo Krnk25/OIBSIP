@@ -1,10 +1,10 @@
 import cors from "cors";
 import dotenv from "dotenv";
 import express from "express";
-import http from "http"; // 1. HTTP module import किया
+import http from "http";
 import mongoose from "mongoose";
 import dns from "node:dns";
-import { Server } from "socket.io"; // 2. Socket.io import किया
+import { Server } from "socket.io";
 
 // Force Node.js to use Google DNS to bypass local ISP/Hotspot SRV blocks
 dns.setServers(["8.8.8.8", "8.8.4.4"]);
@@ -21,7 +21,7 @@ import orderRoutes from "./routes/orderRoutes.js";
 import pizzaRoutes from "./routes/pizzaRoutes.js";
 
 // ========================================
-// GLOBAL UNCAUGHT ERROR HANDLERS (ALL ERRORS)
+// GLOBAL UNCAUGHT ERROR HANDLERS
 // ========================================
 process.on("uncaughtException", (err) => {
   console.error("\n❌ [UNCAUGHT EXCEPTION] Critical Error:");
@@ -31,7 +31,7 @@ process.on("uncaughtException", (err) => {
   process.exit(1);
 });
 
-process.on("unhandledRejection", (reason, promise) => {
+process.on("unhandledRejection", (reason) => {
   console.error("\n❌ [UNHANDLED REJECTION] Promise Error:");
   console.error("Reason:", reason);
   if (reason instanceof Error) {
@@ -57,32 +57,46 @@ console.log("=================================\n");
 // EXPRESS APP, HTTP SERVER & SOCKET.IO
 // ========================================
 const app = express();
-const server = http.createServer(app); // 3. Express app को HTTP server के साथ रैप किया
+const server = http.createServer(app);
+
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "http://localhost:3000",
+  process.env.CLIENT_URL,
+].filter(Boolean);
+
+const corsOriginHandler = (origin, callback) => {
+  if (!origin || allowedOrigins.includes(origin)) {
+    return callback(null, true);
+  }
+  return callback(null, true);
+};
 
 const io = new Server(server, {
   cors: {
-    origin: "*", // फ्रंटएंड कनेक्शन के लिए सभी ओरिजिन अनुमति
+    origin: corsOriginHandler,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    credentials: true,
   },
 });
 
-// Socket.io Connection Listener
 io.on("connection", (socket) => {
   console.log(`⚡ A user connected via Socket.io: ${socket.id}`);
 
-  socket.on("disconnect", () => {
-    console.log(`🔌 User disconnected: ${socket.id}`);
+  socket.on("disconnect", (reason) => {
+    console.log(`🔌 User disconnected (${socket.id}): ${reason}`);
   });
 });
 
-// App को io एक्सेस देने के लिए (अगर आगे किसी कंट्रोलर में लाइव आर्डर स्टेटस भेजना हो)
 app.set("io", io);
 
 app.use(
   cors({
-    origin: "*",
+    origin: corsOriginHandler,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
   })
 );
 
@@ -155,16 +169,12 @@ app.use((err, req, res, next) => {
 });
 
 // ========================================
-// MONGODB DIAGNOSTICS (CHECK DB & COLLECTIONS)
+// MONGODB DIAGNOSTICS (NON-BLOCKING)
 // ========================================
 const runMongoDiagnostics = async () => {
   try {
     const db = mongoose.connection.db;
-
-    if (!db) {
-      console.error("❌ MongoDB database handle is not available");
-      return;
-    }
+    if (!db) return;
 
     console.log("\n=================================");
     console.log("MONGODB DIAGNOSTICS");
@@ -173,30 +183,19 @@ const runMongoDiagnostics = async () => {
     console.log("ACTIVE DATABASE:", mongoose.connection.name);
     console.log("HOST:", mongoose.connection.host);
 
-    const adminDb = db.admin();
-    const dbsList = await adminDb.listDatabases();
-    console.log(
-      "ALL DATABASES:",
-      dbsList.databases.map((d) => `${d.name} (${(d.sizeOnDisk / 1024).toFixed(2)} KB)`)
-    );
-
     const collections = await db.listCollections().toArray();
     console.log(
       "COLLECTIONS IN CURRENT DB:",
       collections.map((c) => c.name)
     );
-    console.log("---------------------------------");
 
     for (const collection of collections) {
       const count = await db.collection(collection.name).countDocuments();
       console.log(`📁 COLLECTION [${collection.name}]: ${count} documents`);
     }
-
     console.log("=================================\n");
   } catch (error) {
-    console.error("❌ MongoDB diagnostics failed:");
-    console.error("Message:", error.message);
-    console.error("Stack:\n", error.stack);
+    console.warn("⚠️  MongoDB diagnostics skipped:", error.message);
   }
 };
 
@@ -209,31 +208,24 @@ const startServer = async () => {
   try {
     console.log("⏳ Connecting to MongoDB...");
     await connectDB();
-
     console.log("✅ MongoDB connected successfully!");
 
-    // Run diagnostics
-    await runMongoDiagnostics();
-
-    // Start HTTP server (instead of app.listen)
     server.listen(PORT, "0.0.0.0", () => {
       console.log("---------------------------------");
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`🌐 Local URL: http://localhost:${PORT}`);
       console.log("---------------------------------\n");
     });
+
+    runMongoDiagnostics();
   } catch (error) {
     console.error("\n❌ [FATAL] MongoDB Connection Failed!");
     console.error("Error Name:", error.name);
     console.error("Error Code:", error.code || "N/A");
     console.error("Error Message:", error.message);
-    if (error.reason) {
-      console.error("Topology Reason:", JSON.stringify(error.reason, null, 2));
-    }
     console.error("Full Stack Trace:\n", error.stack);
     process.exit(1);
   }
 };
 
-// Start application
 startServer();

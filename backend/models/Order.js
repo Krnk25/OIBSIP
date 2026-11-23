@@ -1,20 +1,19 @@
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
 
 const orderSchema = new mongoose.Schema(
   {
     user: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
+      ref: "User",
       required: true,
     },
     items: [
       {
         name: { type: String, required: true },
         isCustom: { type: Boolean, default: false },
-        size: { type: String, default: 'medium' },
+        size: { type: String, default: "medium" },
         quantity: { type: Number, required: true, default: 1 },
         price: { type: Number, required: true },
-        // कस्टमाइज्ड पिझ्झासाठी निवडलेले इंग्रेडियंट्स (स्टॉक कमी करण्यासाठी IDs सहित)
         customDetails: {
           base: { id: mongoose.Schema.Types.ObjectId, name: String },
           sauce: { id: mongoose.Schema.Types.ObjectId, name: String },
@@ -25,7 +24,7 @@ const orderSchema = new mongoose.Schema(
     ],
     deliveryAddress: {
       type: String,
-      required: [true, 'Delivery address is required'],
+      required: [true, "Delivery address is required"],
     },
     totalAmount: {
       type: Number,
@@ -37,19 +36,29 @@ const orderSchema = new mongoose.Schema(
       razorpaySignature: String,
       status: {
         type: String,
-        enum: ['Pending', 'Paid', 'Failed'],
-        default: 'Pending',
+        enum: ["Pending", "Paid", "Failed"],
+        default: "Pending",
       },
     },
     orderStatus: {
       type: String,
-      enum: ['Order Received', 'In the Kitchen', 'Sent to Delivery', 'Delivered'],
-      default: 'Order Received',
+      enum: ["Order Received", "In the Kitchen", "Sent to Delivery", "Delivered"],
+      default: "Order Received",
     },
+    deliveryOtp: {
+  type: String,
+},
+isOtpVerified: {
+  type: Boolean,
+  default: false,
+},
+deliveredAt: {
+  type: Date,
+},
   },
   { timestamps: true }
 );
 
-const Order = mongoose.model('Order', orderSchema);
+const Order = mongoose.model("Order", orderSchema);
 
 export default Order;
