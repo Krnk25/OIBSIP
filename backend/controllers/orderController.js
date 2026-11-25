@@ -2,6 +2,7 @@ import crypto from "crypto";
 import Razorpay from "razorpay";
 import Ingredient from "../models/Ingredient.js";
 import Order from "../models/Order.js";
+import Pizza from "../models/Pizza.js";
 import User from "../models/User.js";
 import { sendDeliveryOtpEmail } from "../utils/sendDeliveryOtpEmail.js";
 import { sendNewOrderEmailToAdmin } from "../utils/sendOrderEmail.js";
@@ -60,8 +61,10 @@ const formatOrderItems = (rawItems = []) =>
   rawItems.map((item) => {
     const qty = Number(item.quantity ?? item.qty ?? 1);
     const price = Number(item.price ?? item.unitPrice ?? 0);
+    const pizzaId = item.pizza?._id || item.pizza || (!item.isCustom ? item._id : undefined);
 
     return {
+      ...(pizzaId ? { pizza: pizzaId } : {}),
       name: item.name,
       image: item.image || "",
       isCustom: Boolean(item.isCustom),
@@ -73,41 +76,61 @@ const formatOrderItems = (rawItems = []) =>
     };
   });
 
-// Helper: Deduct stock for custom pizza ingredients
-const deductCustomIngredientStock = async (items = []) => {
+// Helper: Deduct stock for both custom pizza ingredients and regular menu pizzas
+const deductOrderStock = async (items = []) => {
+  if (!Array.isArray(items) || items.length === 0) return;
+
   for (const item of items) {
+    const rawQty = Number(item.quantity ?? item.qty ?? 1);
+    const qty = Number.isFinite(rawQty) && rawQty > 0 ? rawQty : 1;
+
     if (item.isCustom && item.customDetails) {
-      const qty = Number(item.quantity ?? item.qty ?? 1);
-      const safeQty = Number.isFinite(qty) && qty > 0 ? qty : 1;
-      const ingredientIds = [];
+      const { base, sauce, cheese, veggies = [] } = item.customDetails;
+      const selectedIngredients = [
+        base,
+        sauce,
+        cheese,
+        ...(Array.isArray(veggies) ? veggies : []),
+      ].filter(Boolean);
 
-      if (item.customDetails.base?.id || item.customDetails.base?._id) {
-        ingredientIds.push(
-          item.customDetails.base.id || item.customDetails.base._id
+      for (const ing of selectedIngredients) {
+        const ingId = ing?._id || ing?.id;
+        const ingName = ing?.name ? String(ing.name).trim() : "";
+        const filter = ingId ? { _id: ingId } : ingName ? { name: ingName } : null;
+        if (!filter) continue;
+
+        const updatedIng = await Ingredient.findOneAndUpdate(
+          filter,
+          { $inc: { stock: -qty } },
+          { new: true }
         );
+
+        if (updatedIng && Number(updatedIng.stock) < 0) {
+          await Ingredient.findByIdAndUpdate(updatedIng._id, {
+            $set: { stock: 0 },
+          });
+        }
       }
-      if (item.customDetails.sauce?.id || item.customDetails.sauce?._id) {
-        ingredientIds.push(
-          item.customDetails.sauce.id || item.customDetails.sauce._id
-        );
-      }
-      if (item.customDetails.cheese?.id || item.customDetails.cheese?._id) {
-        ingredientIds.push(
-          item.customDetails.cheese.id || item.customDetails.cheese._id
-        );
-      }
-      if (Array.isArray(item.customDetails.veggies)) {
-        item.customDetails.veggies.forEach((v) => {
-          const vId = v?.id || v?._id;
-          if (vId) ingredientIds.push(vId);
+    } else {
+      const pizzaId = item.pizza?._id || item.pizza || item._id;
+      const pizzaName = item.name ? String(item.name).trim() : "";
+      const filter = pizzaId
+        ? { _id: pizzaId }
+        : pizzaName
+          ? { name: pizzaName }
+          : null;
+      if (!filter) continue;
+
+      const updatedPizza = await Pizza.findOneAndUpdate(
+        filter,
+        { $inc: { stock: -qty } },
+        { new: true }
+      );
+
+      if (updatedPizza && Number(updatedPizza.stock) < 0) {
+        await Pizza.findByIdAndUpdate(updatedPizza._id, {
+          $set: { stock: 0 },
         });
-      }
-
-      if (ingredientIds.length > 0) {
-        await Ingredient.updateMany(
-          { _id: { $in: ingredientIds }, stock: { $gte: safeQty } },
-          { $inc: { stock: -safeQty } }
-        );
       }
     }
   }
@@ -191,7 +214,7 @@ export const createOrder = async (req, res) => {
           }
         : undefined;
 
-    await deductCustomIngredientStock(rawItems);
+    await deductOrderStock(rawItems);
 
     const items = formatOrderItems(rawItems);
     const isOnline = String(paymentMethod).toLowerCase() === "online";
@@ -217,6 +240,7 @@ export const createOrder = async (req, res) => {
       orderStatus: "Order Received",
       deliveryOtp,
       isOtpVerified: false,
+      stockDeducted: true,
     });
 
     await triggerAdminOrderEmail(newOrder, req.user);
@@ -281,7 +305,7 @@ export const createRazorpayOrder = async (req, res) => {
   }
 };
 
-// @desc    Verify payment signature, deduct custom ingredient stock & save order
+// @desc    Verify payment signature, deduct stock & save order
 // @route   POST /api/orders/verify
 export const verifyAndPlaceOrder = async (req, res) => {
   try {
@@ -343,7 +367,7 @@ export const verifyAndPlaceOrder = async (req, res) => {
           }
         : undefined;
 
-    await deductCustomIngredientStock(sourceItems);
+    await deductOrderStock(sourceItems);
 
     const formattedItems = formatOrderItems(sourceItems);
     const deliveryOtp = generateDeliveryOtp();
@@ -367,6 +391,7 @@ export const verifyAndPlaceOrder = async (req, res) => {
       orderStatus: "Order Received",
       deliveryOtp,
       isOtpVerified: false,
+      stockDeducted: true,
     });
 
     await triggerAdminOrderEmail(newOrder, req.user);

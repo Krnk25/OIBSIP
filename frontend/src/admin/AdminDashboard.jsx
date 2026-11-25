@@ -51,6 +51,16 @@ const normalizeStoreSettings = (raw) => {
   };
 };
 
+const normalizePhone10 = (raw) => {
+  if (!raw) return "";
+  const digits = String(raw).replace(/\D/g, "");
+  if (digits.length >= 10) {
+    const ten = digits.slice(-10);
+    return /^[6-9]\d{9}$/.test(ten) ? ten : ten;
+  }
+  return "";
+};
+
 export default function AdminDashboard() {
   const [activeTab, setActiveTab] = useState("orders");
   const [orderFilter, setOrderFilter] = useState("ALL");
@@ -63,7 +73,6 @@ export default function AdminDashboard() {
   const [storeSettings, setStoreSettings] = useState(DEFAULT_STORE_SETTINGS);
   const [savingSettings, setSavingSettings] = useState(false);
 
-  // Dropdown states inside Pizzas & Stock tab
   const [openAddPizza, setOpenAddPizza] = useState(false);
   const [openAddIng, setOpenAddIng] = useState(false);
   const [openPricingBox, setOpenPricingBox] = useState(true);
@@ -103,31 +112,48 @@ export default function AdminDashboard() {
     return method.includes("cash") || method.includes("cod");
   };
 
-  const getCustomerName = (order) =>
-    order?.user?.name ||
-    order?.customerName ||
-    order?.shippingAddress?.name ||
-    "Guest";
+  const getPopulatedUser = (order) =>
+    order?.user && typeof order.user === "object" ? order.user : null;
 
-  const getCustomerEmail = (order) =>
-    order?.user?.email ||
-    order?.customerEmail ||
-    order?.email ||
-    order?.shippingAddress?.email ||
-    "";
+  const getCustomerName = (order) => {
+    const u = getPopulatedUser(order);
+    return (
+      u?.name ||
+      order?.customerName ||
+      order?.shippingAddress?.name ||
+      "Guest"
+    );
+  };
 
-  // Strictly reads the mobile number saved on user's profile / order
+  const getCustomerEmail = (order) => {
+    const u = getPopulatedUser(order);
+    return (
+      u?.email ||
+      order?.customerEmail ||
+      order?.email ||
+      order?.shippingAddress?.email ||
+      ""
+    );
+  };
+
+  const getProfilePhone = (order) => {
+    const u = getPopulatedUser(order);
+    return normalizePhone10(u?.phone || u?.mobile || "");
+  };
+
   const getOrderPhone = (order) => {
+    const u = getPopulatedUser(order);
     const candidates = [
-      order?.user?.phone,
-      order?.user?.mobile,
+      u?.phone,
+      u?.mobile,
       order?.phone,
+      order?.mobile,
       order?.shippingAddress?.phone,
+      order?.shippingAddress?.mobile,
     ];
     for (const raw of candidates) {
-      if (!raw) continue;
-      const digits = String(raw).replace(/\D/g, "");
-      if (digits.length >= 10) return digits.slice(-10);
+      const cleaned = normalizePhone10(raw);
+      if (cleaned) return cleaned;
     }
     return "";
   };
@@ -137,7 +163,7 @@ export default function AdminDashboard() {
       if (showSpinner) setLoading(true);
       const [ordersRes, ingRes, pizzasRes, settingsRes] = await Promise.all([
         API.get("/orders"),
-        API.get("/pizzas/ingredients"),
+        API.get("/pizzas/ingredients").catch(() => ({ data: [] })),
         API.get("/pizzas").catch(() => ({ data: [] })),
         API.get("/settings").catch(() => ({ data: DEFAULT_STORE_SETTINGS })),
       ]);
@@ -176,7 +202,7 @@ export default function AdminDashboard() {
 
     socket.on("newOrderPlaced", (newOrder) => {
       const payload = newOrder?.order ? newOrder.order : newOrder;
-      if (payload) {
+      if (payload?._id) {
         setOrders((prev) => {
           const exists = prev.some((o) => o._id === payload._id);
           return exists ? prev : [payload, ...prev];
@@ -184,9 +210,7 @@ export default function AdminDashboard() {
 
         const buyerName = getCustomerName(payload);
         const buyerEmail = getCustomerEmail(payload);
-        const shortId = String(payload._id || "")
-          .slice(-6)
-          .toUpperCase();
+        const shortId = String(payload._id).slice(-6).toUpperCase();
         setOtpBannerMsg(
           `📩 New Order #${shortId} placed by ${buyerName}${
             buyerEmail ? ` (${buyerEmail})` : ""
@@ -216,9 +240,7 @@ export default function AdminDashboard() {
       const normalized = normalizeStoreSettings(storeSettings);
       const { data } = await API.put("/settings", normalized);
       setStoreSettings(normalizeStoreSettings(data));
-      setOtpBannerMsg(
-        "✅ Delivery fee & discount rules saved and synced live!",
-      );
+      setOtpBannerMsg("✅ Delivery fee & discount rules saved and synced live!");
     } catch (error) {
       alert(
         error.response?.data?.message ||
@@ -229,15 +251,16 @@ export default function AdminDashboard() {
     }
   };
 
-  // Sends 4-digit delivery OTP strictly to user's profile mobile number
   const sendOtpToCustomer = async (
     order,
     { markOutForDelivery = true, openVerifyModal = false } = {},
   ) => {
     const customerPhone = getOrderPhone(order);
-    if (!customerPhone) {
+    const customerEmail = getCustomerEmail(order);
+
+    if (!customerPhone && !customerEmail) {
       alert(
-        "User profile mein mobile number save nahi hai. User ko apni profile mein mobile number update karne ke liye kahein.",
+        "User profile mein mobile number ya email save nahi hai. User ko apni profile update karne ke liye kahein.",
       );
       return false;
     }
@@ -248,7 +271,8 @@ export default function AdminDashboard() {
 
       const { data } = await API.post(`/orders/${order._id}/send-otp`, {
         markOutForDelivery,
-        phone: customerPhone,
+        ...(customerPhone ? { phone: customerPhone } : {}),
+        ...(customerEmail ? { email: customerEmail } : {}),
       });
 
       const nextStatus = data.orderStatus || getOrderStatus(order);
@@ -265,12 +289,17 @@ export default function AdminDashboard() {
         prev.map((o) => (o._id === order._id ? updatedLocalOrder : o)),
       );
 
-      const bannerText = `📲 4-digit Delivery OTP sent to user's profile email and number +91 ${customerPhone} for Order #${String(
-        order._id,
-      )
-        .slice(-6)
-        .toUpperCase()}!`;
-      setOtpBannerMsg(bannerText);
+      const contactLabel = customerPhone
+        ? `number +91 ${customerPhone}`
+        : `email ${customerEmail}`;
+
+      setOtpBannerMsg(
+        `📲 4-digit Delivery OTP sent to user's ${contactLabel} for Order #${String(
+          order._id,
+        )
+          .slice(-6)
+          .toUpperCase()}!`,
+      );
 
       if (openVerifyModal) {
         setOtpModal({
@@ -279,7 +308,7 @@ export default function AdminDashboard() {
           otpInput: "",
           error: "",
           submitting: false,
-          infoMsg: `OTP sent to user's registered email and mobile +91 ${customerPhone}. Ask the customer for the 4-digit OTP and verify below.`,
+          infoMsg: `OTP sent to user's ${contactLabel}. Ask the customer for the 4-digit OTP and verify below.`,
         });
       }
 
@@ -300,7 +329,6 @@ export default function AdminDashboard() {
   const handleStatusChange = async (order, newStatus) => {
     const currentStatus = getOrderStatus(order);
 
-    // When admin selects "Delivered": send OTP to user's profile mobile first, then open OTP verify modal
     if (
       newStatus === "Delivered" &&
       currentStatus !== "Delivered" &&
@@ -338,6 +366,10 @@ export default function AdminDashboard() {
             ? {
                 ...o,
                 ...(typeof updatedOrder === "object" ? updatedOrder : {}),
+                user:
+                  typeof updatedOrder?.user === "object"
+                    ? updatedOrder.user
+                    : o.user,
                 orderStatus: updatedStatus,
                 paymentStatus: updatedPaymentStatus,
                 isPaid: updatedPaymentStatus === "Paid",
@@ -390,6 +422,10 @@ export default function AdminDashboard() {
             ? {
                 ...o,
                 ...(typeof updatedOrder === "object" ? updatedOrder : {}),
+                user:
+                  typeof updatedOrder?.user === "object"
+                    ? updatedOrder.user
+                    : o.user,
                 orderStatus: updatedOrder?.orderStatus || "Delivered",
                 isOtpVerified: true,
                 paymentStatus: finalPaymentStatus,
@@ -434,6 +470,10 @@ export default function AdminDashboard() {
             ? {
                 ...o,
                 ...(typeof updatedOrder === "object" ? updatedOrder : {}),
+                user:
+                  typeof updatedOrder?.user === "object"
+                    ? updatedOrder.user
+                    : o.user,
                 paymentStatus: savedPaymentStatus,
                 isPaid: savedPaymentStatus === "Paid",
               }
@@ -501,12 +541,19 @@ export default function AdminDashboard() {
 
   const handleRestock = async (id, currentStock) => {
     try {
+      const nextStock = Number(currentStock || 0) + 25;
       const { data } = await API.put(`/pizzas/ingredients/${id}`, {
-        stock: Number(currentStock || 0) + 25,
+        stock: nextStock,
       });
       const updatedIng = data?.ingredient ? data.ingredient : data;
       setIngredients((prev) =>
-        prev.map((item) => (item._id === id ? updatedIng : item)),
+        prev.map((item) =>
+          item._id === id
+            ? typeof updatedIng === "object" && updatedIng?._id
+              ? updatedIng
+              : { ...item, stock: nextStock }
+            : item,
+        ),
       );
     } catch (error) {
       alert("Failed to update stock");
@@ -700,9 +747,9 @@ export default function AdminDashboard() {
           </h1>
 
           <p style={{ color: "#64748b", fontSize: 14, margin: 0 }}>
-            Track who ordered pizzas by email &amp; phone, send delivery OTPs to
-            user&apos;s profile mobile, control delivery fee &amp; discounts,
-            and manage stocks.
+            Track who ordered pizzas by user profile, email &amp; phone, send
+            delivery OTPs, control delivery fee &amp; discounts, and manage
+            stocks.
           </p>
         </div>
 
@@ -995,9 +1042,12 @@ export default function AdminDashboard() {
                 const currentStatus = getOrderStatus(order);
                 const isCOD = isCodOrder(order);
                 const paymentStatus = getPaymentStatus(order);
+
+                const populatedUser = getPopulatedUser(order);
                 const buyerName = getCustomerName(order);
                 const buyerEmail = getCustomerEmail(order);
-                const buyerPhone = getOrderPhone(order);
+                const profilePhone = getProfilePhone(order);
+                const orderPhone = getOrderPhone(order);
 
                 const isDelivered =
                   String(currentStatus).toLowerCase() === "delivered";
@@ -1110,7 +1160,7 @@ export default function AdminDashboard() {
                           )}
                         </div>
 
-                        {/* Ordered By User Info */}
+                        {/* User Profile & Order Contact Details */}
                         <div
                           style={{
                             background: "#f8fafc",
@@ -1123,10 +1173,11 @@ export default function AdminDashboard() {
                           }}
                         >
                           <span>
-                            Ordered by:{" "}
+                            User Profile:{" "}
                             <strong style={{ color: "#172554" }}>
                               {buyerName}
                             </strong>
+                            {populatedUser?.role ? ` (${populatedUser.role})` : ""}
                           </span>{" "}
                           •{" "}
                           <span>
@@ -1139,7 +1190,11 @@ export default function AdminDashboard() {
                           <span>
                             📱 Profile Mobile:{" "}
                             <strong style={{ color: "#172554" }}>
-                              {buyerPhone ? `+91 ${buyerPhone}` : "Not set"}
+                              {profilePhone
+                                ? `+91 ${profilePhone}`
+                                : orderPhone
+                                  ? `+91 ${orderPhone} (Order)`
+                                  : "Not set"}
                             </strong>
                           </span>
                           <div
@@ -1153,7 +1208,6 @@ export default function AdminDashboard() {
                           </div>
                         </div>
 
-                        {/* Out-for-Delivery OTP Action */}
                         {!isDelivered && !isCancelled && (
                           <div
                             style={{
@@ -1193,7 +1247,6 @@ export default function AdminDashboard() {
                         )}
                       </div>
 
-                      {/* Status Dropdowns */}
                       <div
                         style={{
                           display: "flex",
@@ -1253,7 +1306,6 @@ export default function AdminDashboard() {
                       </div>
                     </div>
 
-                    {/* Items List */}
                     <div
                       style={{
                         marginTop: 14,
@@ -1546,6 +1598,22 @@ export default function AdminDashboard() {
                       value={newIng.stock}
                       onChange={(e) =>
                         setNewIng({ ...newIng, stock: Number(e.target.value) })
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label style={labelStyle}>Low Stock Alert</label>
+                    <input
+                      style={inputStyle}
+                      type="number"
+                      min="1"
+                      value={newIng.threshold}
+                      onChange={(e) =>
+                        setNewIng({
+                          ...newIng,
+                          threshold: Number(e.target.value),
+                        })
                       }
                     />
                   </div>
@@ -1992,7 +2060,7 @@ export default function AdminDashboard() {
         )}
       </div>
 
-      {/* Delivery OTP Verification Modal (Opens after sending OTP on Delivered) */}
+      {/* Delivery OTP Verification Modal */}
       {otpModal.open && otpModal.order && (
         <div
           style={{

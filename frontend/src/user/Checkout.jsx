@@ -127,12 +127,7 @@ export default function Checkout() {
   const computedDiscount =
     typeof discountAmount === "number" ? Math.max(0, discountAmount) : 0;
 
-  const computedDeliveryFee =
-    typeof deliveryFee === "number"
-      ? deliveryFee
-      : checkoutItems.length > 0
-        ? 0
-        : 0;
+  const computedDeliveryFee = typeof deliveryFee === "number" ? deliveryFee : 0;
 
   const computedTotal =
     typeof totalAmount === "number"
@@ -144,11 +139,12 @@ export default function Checkout() {
   const buildFormattedItems = () =>
     checkoutItems.map((item) => {
       const size = item.selectedSize || item.size || "medium";
+      const qty = Number(item.qty ?? item.quantity) || 1;
       return {
         pizza: item.isCustom ? undefined : item._id,
         name: item.name,
-        quantity: Number(item.qty ?? item.quantity ?? 1),
-        qty: Number(item.qty ?? item.quantity ?? 1),
+        quantity: qty,
+        qty,
         size,
         price: getItemUnitPrice(item),
         image: item.image,
@@ -223,9 +219,7 @@ export default function Checkout() {
 
     const rpOrder = data?.order || data;
     const keyId =
-      data?.keyId ||
-      rpOrder?.keyId ||
-      import.meta.env.VITE_RAZORPAY_KEY_ID;
+      data?.keyId || rpOrder?.keyId || import.meta.env.VITE_RAZORPAY_KEY_ID;
 
     if (!keyId || !rpOrder?.id) {
       setLoading(false);
@@ -259,6 +253,8 @@ export default function Checkout() {
             deliveryAddress,
             ...(cleanPhone ? { phone: cleanPhone } : {}),
             totalAmount: safeTotal,
+            discountAmount: computedDiscount,
+            deliveryFee: computedDeliveryFee,
           });
           finalizeAfterOrderSuccess(verifyData.order);
         } catch (verifyErr) {
@@ -283,7 +279,7 @@ export default function Checkout() {
       setLoading(false);
       alert(
         paymentFailure?.error?.description ||
-          "Online payment failed. Please try again.",
+          "Online payment failed. In Test Mode, enter UPI ID success@razorpay instead of scanning QR.",
       );
     });
     rzp.open();
@@ -557,49 +553,64 @@ export default function Checkout() {
                     </p>
                   </div>
                 ) : (
-                  <div className="payment-grid">
-                    <label
-                      className={`payment-option ${
-                        paymentMethod === "Online" ? "active" : ""
-                      }`}
-                    >
-                      <div className="payment-option-top">
-                        <span>📱</span>
-                        <input
-                          type="radio"
-                          name="payment"
-                          value="Online"
-                          checked={paymentMethod === "Online"}
-                          onChange={() => setPaymentMethod("Online")}
-                        />
-                      </div>
-                      <div>
-                        <h3>Online Payment</h3>
-                        <p>UPI, Debit/Credit Card, or Net Banking</p>
-                      </div>
-                    </label>
+                  <>
+                    <div className="payment-grid">
+                      <label
+                        className={`payment-option ${
+                          paymentMethod === "Online" ? "active" : ""
+                        }`}
+                      >
+                        <div className="payment-option-top">
+                          <span>📱</span>
+                          <input
+                            type="radio"
+                            name="payment"
+                            value="Online"
+                            checked={paymentMethod === "Online"}
+                            onChange={() => setPaymentMethod("Online")}
+                          />
+                        </div>
+                        <div>
+                          <h3>Online Payment</h3>
+                          <p>UPI, Debit/Credit Card, or Net Banking</p>
+                        </div>
+                      </label>
 
-                    <label
-                      className={`payment-option ${
-                        paymentMethod === "Cash on Delivery" ? "active" : ""
-                      }`}
-                    >
-                      <div className="payment-option-top">
-                        <span>💵</span>
-                        <input
-                          type="radio"
-                          name="payment"
-                          value="Cash on Delivery"
-                          checked={paymentMethod === "Cash on Delivery"}
-                          onChange={() => setPaymentMethod("Cash on Delivery")}
-                        />
-                      </div>
-                      <div>
-                        <h3>Cash on Delivery</h3>
-                        <p>Pay in cash when your pizza arrives</p>
-                      </div>
-                    </label>
-                  </div>
+                      <label
+                        className={`payment-option ${
+                          paymentMethod === "Cash on Delivery" ? "active" : ""
+                        }`}
+                      >
+                        <div className="payment-option-top">
+                          <span>💵</span>
+                          <input
+                            type="radio"
+                            name="payment"
+                            value="Cash on Delivery"
+                            checked={paymentMethod === "Cash on Delivery"}
+                            onChange={() => setPaymentMethod("Cash on Delivery")}
+                          />
+                        </div>
+                        <div>
+                          <h3>Cash on Delivery</h3>
+                          <p>Pay in cash when your pizza arrives</p>
+                        </div>
+                      </label>
+                    </div>
+
+                    {paymentMethod === "Online" && (
+                      <p
+                        style={{
+                          margin: "12px 0 0",
+                          fontSize: 12.5,
+                          color: "#64748b",
+                        }}
+                      >
+                        Test Mode tip: Do not scan QR with PhonePe/GPay in Test
+                        Mode—enter UPI ID <strong>success@razorpay</strong>.
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             </div>
