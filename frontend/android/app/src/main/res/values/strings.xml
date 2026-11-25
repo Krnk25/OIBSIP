@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">PizzaZone</string>
+    <string name="title_activity_main">PizzaZone</string>
+    <string name="package_name">com.karan.pizzazone</string>
+    <string name="custom_url_scheme">com.karan.pizzazone</string>
+</resources>
