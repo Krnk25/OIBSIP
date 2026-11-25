@@ -126,7 +126,6 @@ export default function Cart() {
                   <div className="cart-item-details">
                     <h3>{item.name}</h3>
                     <span className="pizza-size">{size}</span>
-                    <p className="item-price">Price: ₹{unitPrice} each</p>
 
                     <div className="quantity-control">
                       <button

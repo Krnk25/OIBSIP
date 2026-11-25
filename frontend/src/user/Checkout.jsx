@@ -8,6 +8,12 @@ const ADDRESS_KEY = "pizzaDeliveryAddresses";
 const MOBILE_KEY = "pizzaUserMobile";
 const RAZORPAY_SCRIPT_URL = "https://checkout.razorpay.com/v1/checkout.js";
 
+const normalizeIndianPhone10 = (raw = "") => {
+  const digits = String(raw).replace(/\D/g, "");
+  const ten = digits.length >= 10 ? digits.slice(-10) : digits;
+  return /^[6-9]\d{9}$/.test(ten) ? ten : "";
+};
+
 const loadRazorpaySdk = () =>
   new Promise((resolve) => {
     if (window.Razorpay) {
@@ -37,6 +43,7 @@ export default function Checkout() {
     cart,
     selectedItems,
     subtotal,
+    discountAmount,
     deliveryFee,
     totalAmount,
     removeOrderedItems,
@@ -68,16 +75,18 @@ export default function Checkout() {
       postalCode: String(item.pincode || prev.postalCode || "")
         .replace(/\D/g, "")
         .slice(0, 6),
-      phone: String(item.phone || fallbackPhone || prev.phone || "")
-        .replace(/\D/g, "")
-        .slice(0, 10),
+      phone:
+        normalizeIndianPhone10(item.phone) ||
+        normalizeIndianPhone10(fallbackPhone) ||
+        prev.phone ||
+        "",
     }));
   };
 
   useEffect(() => {
-    const savedMobile = (localStorage.getItem(MOBILE_KEY) || "")
-      .replace(/\D/g, "")
-      .slice(0, 10);
+    const savedMobile = normalizeIndianPhone10(
+      localStorage.getItem(MOBILE_KEY) || "",
+    );
 
     if (savedMobile) {
       setAddress((prev) => ({
@@ -115,17 +124,22 @@ export default function Checkout() {
           0,
         );
 
+  const computedDiscount =
+    typeof discountAmount === "number" ? Math.max(0, discountAmount) : 0;
+
   const computedDeliveryFee =
     typeof deliveryFee === "number"
       ? deliveryFee
       : checkoutItems.length > 0
-        ? 40
+        ? 0
         : 0;
 
   const computedTotal =
     typeof totalAmount === "number"
-      ? totalAmount
-      : computedSubtotal + computedDeliveryFee;
+      ? Math.max(0, totalAmount)
+      : Math.max(0, computedSubtotal - computedDiscount + computedDeliveryFee);
+
+  const isZeroOrder = checkoutItems.length > 0 && computedTotal === 0;
 
   const buildFormattedItems = () =>
     checkoutItems.map((item) => {
@@ -143,6 +157,37 @@ export default function Checkout() {
       };
     });
 
+  const buildShippingPayload = () => {
+    const cleanPhone = normalizeIndianPhone10(address.phone);
+    const cleanStreet = String(address.street || "").trim();
+    const cleanCity = String(address.city || "").trim();
+    const cleanPostal = String(address.postalCode || "")
+      .replace(/\D/g, "")
+      .slice(0, 6);
+
+    const shippingAddress = {
+      street: cleanStreet,
+      city: cleanCity,
+      postalCode: cleanPostal,
+      ...(cleanPhone ? { phone: cleanPhone } : {}),
+    };
+
+    const deliveryAddress = [
+      cleanStreet,
+      cleanCity,
+      cleanPostal ? `- ${cleanPostal}` : "",
+      cleanPhone ? `Phone: ${cleanPhone}` : "",
+    ]
+      .filter(Boolean)
+      .join(", ");
+
+    return {
+      cleanPhone,
+      shippingAddress,
+      deliveryAddress,
+    };
+  };
+
   const finalizeAfterOrderSuccess = (order) => {
     if (typeof removeOrderedItems === "function") {
       removeOrderedItems(checkoutItems);
@@ -155,6 +200,15 @@ export default function Checkout() {
   };
 
   const startOnlinePayment = async (formattedItems) => {
+    const safeTotal = Number(computedTotal);
+    if (!Number.isFinite(safeTotal) || safeTotal <= 0) {
+      setLoading(false);
+      return alert("Order total must be greater than ₹0.");
+    }
+
+    const { cleanPhone, shippingAddress, deliveryAddress } =
+      buildShippingPayload();
+
     const sdkLoaded = await loadRazorpaySdk();
     if (!sdkLoaded) {
       setLoading(false);
@@ -163,12 +217,22 @@ export default function Checkout() {
       );
     }
 
-    const keyId =
-      import.meta.env.VITE_RAZORPAY_KEY_ID || "rzp_test_placeholder";
-
-    const { data: rpOrder } = await API.post("/orders/razorpay", {
-      amount: computedTotal,
+    const { data } = await API.post("/orders/razorpay", {
+      amount: safeTotal,
     });
+
+    const rpOrder = data?.order || data;
+    const keyId =
+      data?.keyId ||
+      rpOrder?.keyId ||
+      import.meta.env.VITE_RAZORPAY_KEY_ID;
+
+    if (!keyId || !rpOrder?.id) {
+      setLoading(false);
+      return alert(
+        "Razorpay configuration missing. Please check server Razorpay keys.",
+      );
+    }
 
     const options = {
       key: keyId,
@@ -178,22 +242,25 @@ export default function Checkout() {
       description: "Fresh Pizza Delivery Order",
       order_id: rpOrder.id,
       prefill: {
-        contact: address.phone || "",
+        contact: cleanPhone || "",
       },
       theme: {
         color: "#f97316",
       },
       handler: async (response) => {
         try {
-          const { data } = await API.post("/orders/verify", {
+          const { data: verifyData } = await API.post("/orders/verify", {
             razorpay_order_id: response.razorpay_order_id,
             razorpay_payment_id: response.razorpay_payment_id,
             razorpay_signature: response.razorpay_signature,
             items: formattedItems,
-            deliveryAddress: address,
-            totalAmount: computedTotal,
+            orderItems: formattedItems,
+            shippingAddress,
+            deliveryAddress,
+            ...(cleanPhone ? { phone: cleanPhone } : {}),
+            totalAmount: safeTotal,
           });
-          finalizeAfterOrderSuccess(data.order);
+          finalizeAfterOrderSuccess(verifyData.order);
         } catch (verifyErr) {
           console.error("Payment verification error:", verifyErr);
           alert(
@@ -229,14 +296,39 @@ export default function Checkout() {
       return alert("Please select at least one item in your cart to order!");
     }
 
+    const { cleanPhone, shippingAddress, deliveryAddress } =
+      buildShippingPayload();
+
+    if (!cleanPhone) {
+      return alert("Please enter a valid 10-digit Indian mobile number.");
+    }
+
     try {
       setLoading(true);
-
-      if (address.phone) {
-        localStorage.setItem(MOBILE_KEY, address.phone.trim());
-      }
+      localStorage.setItem(MOBILE_KEY, cleanPhone);
 
       const formattedItems = buildFormattedItems();
+
+      if (isZeroOrder) {
+        const { data } = await API.post("/orders", {
+          orderItems: formattedItems,
+          items: formattedItems,
+          shippingAddress,
+          deliveryAddress,
+          phone: cleanPhone,
+          paymentMethod: "Free Order",
+          totalPrice: 0,
+          totalAmount: 0,
+          discountAmount: computedDiscount,
+          deliveryFee: computedDeliveryFee,
+          isPaid: true,
+          paymentStatus: "Paid",
+        });
+
+        finalizeAfterOrderSuccess(data.order);
+        setLoading(false);
+        return;
+      }
 
       if (paymentMethod === "Online") {
         await startOnlinePayment(formattedItems);
@@ -245,9 +337,15 @@ export default function Checkout() {
 
       const { data } = await API.post("/orders", {
         orderItems: formattedItems,
-        shippingAddress: address,
+        items: formattedItems,
+        shippingAddress,
+        deliveryAddress,
+        phone: cleanPhone,
         paymentMethod: "Cash on Delivery",
         totalPrice: computedTotal,
+        totalAmount: computedTotal,
+        discountAmount: computedDiscount,
+        deliveryFee: computedDeliveryFee,
       });
 
       finalizeAfterOrderSuccess(data.order);
@@ -260,26 +358,34 @@ export default function Checkout() {
   };
 
   const updateAddress = (e) => {
+    const { name, value } = e.target;
     setSelectedAddressId("");
+
+    let cleanedValue = value;
+    if (name === "phone") {
+      cleanedValue = value.replace(/\D/g, "").slice(0, 10);
+    } else if (name === "postalCode") {
+      cleanedValue = value.replace(/\D/g, "").slice(0, 6);
+    }
+
     setAddress((prev) => ({
       ...prev,
-      [e.target.name]: e.target.value,
+      [name]: cleanedValue,
     }));
   };
 
   return (
     <div className="checkout-page">
       <div className="checkout-container">
-        {/* Page Heading */}
         <div className="checkout-heading">
           <p className="checkout-kicker">ORDER CHECKOUT</p>
           <h1 className="checkout-title">Complete Your Order</h1>
           <p className="checkout-subtitle">
-            Confirm your delivery address, choose payment, and get fresh hot pizza.
+            Confirm your delivery address, choose payment, and get fresh hot
+            pizza.
           </p>
         </div>
 
-        {/* Banner Card (Profile & MyOrders Header Style) */}
         <div className="checkout-banner">
           <div className="checkout-banner-left">
             <div className="checkout-banner-icon">🧾</div>
@@ -289,7 +395,9 @@ export default function Checkout() {
                 {checkoutItems.length} item(s) selected • Delivery Fee:{" "}
                 {computedDeliveryFee === 0 ? "FREE" : `₹${computedDeliveryFee}`}
               </p>
-              <span className="checkout-banner-tag">● READY TO PLACE ORDER</span>
+              <span className="checkout-banner-tag">
+                ● READY TO PLACE ORDER
+              </span>
             </div>
           </div>
 
@@ -320,7 +428,6 @@ export default function Checkout() {
         ) : (
           <form onSubmit={handleSubmitOrder} className="checkout-grid">
             <div className="checkout-left-col">
-              {/* Delivery Address Card */}
               <div className="checkout-card">
                 <div className="checkout-card-header">
                   <div className="checkout-icon-badge">📍</div>
@@ -416,7 +523,7 @@ export default function Checkout() {
                         type="tel"
                         name="phone"
                         required
-                        pattern="[0-9]{10}"
+                        pattern="[6-9][0-9]{9}"
                         maxLength={10}
                         value={address.phone}
                         onChange={updateAddress}
@@ -428,63 +535,75 @@ export default function Checkout() {
                 </div>
               </div>
 
-              {/* Payment Method Card */}
               <div className="checkout-card">
                 <div className="checkout-card-header">
                   <div className="checkout-icon-badge">💳</div>
                   <div>
                     <h2>Payment Method</h2>
-                    <p>Choose how you want to pay for your order</p>
+                    <p>
+                      {isZeroOrder
+                        ? "Order total is ₹0 — no payment gateway required"
+                        : "Choose how you want to pay for your order"}
+                    </p>
                   </div>
                 </div>
 
-                <div className="payment-grid">
-                  <label
-                    className={`payment-option ${
-                      paymentMethod === "Online" ? "active" : ""
-                    }`}
-                  >
-                    <div className="payment-option-top">
-                      <span>📱</span>
-                      <input
-                        type="radio"
-                        name="payment"
-                        value="Online"
-                        checked={paymentMethod === "Online"}
-                        onChange={() => setPaymentMethod("Online")}
-                      />
-                    </div>
-                    <div>
-                      <h3>Online Payment</h3>
-                      <p>UPI, Debit/Credit Card, or Net Banking</p>
-                    </div>
-                  </label>
+                {isZeroOrder ? (
+                  <div className="saved-addresses-box">
+                    <strong>🎁 Free / ₹0 Order Eligible</strong>
+                    <p style={{ margin: "4px 0 0", fontSize: 13 }}>
+                      Your final total is ₹0. Click &ldquo;Place Free
+                      Order&rdquo; to confirm directly.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="payment-grid">
+                    <label
+                      className={`payment-option ${
+                        paymentMethod === "Online" ? "active" : ""
+                      }`}
+                    >
+                      <div className="payment-option-top">
+                        <span>📱</span>
+                        <input
+                          type="radio"
+                          name="payment"
+                          value="Online"
+                          checked={paymentMethod === "Online"}
+                          onChange={() => setPaymentMethod("Online")}
+                        />
+                      </div>
+                      <div>
+                        <h3>Online Payment</h3>
+                        <p>UPI, Debit/Credit Card, or Net Banking</p>
+                      </div>
+                    </label>
 
-                  <label
-                    className={`payment-option ${
-                      paymentMethod === "Cash on Delivery" ? "active" : ""
-                    }`}
-                  >
-                    <div className="payment-option-top">
-                      <span>💵</span>
-                      <input
-                        type="radio"
-                        name="payment"
-                        value="Cash on Delivery"
-                        checked={paymentMethod === "Cash on Delivery"}
-                        onChange={() => setPaymentMethod("Cash on Delivery")}
-                      />
-                    </div>
-                    <div>
-                      <h3>Cash on Delivery</h3>
-                      <p>Pay in cash when your pizza arrives</p>
-                    </div>
-                  </label>
-                </div>
+                    <label
+                      className={`payment-option ${
+                        paymentMethod === "Cash on Delivery" ? "active" : ""
+                      }`}
+                    >
+                      <div className="payment-option-top">
+                        <span>💵</span>
+                        <input
+                          type="radio"
+                          name="payment"
+                          value="Cash on Delivery"
+                          checked={paymentMethod === "Cash on Delivery"}
+                          onChange={() => setPaymentMethod("Cash on Delivery")}
+                        />
+                      </div>
+                      <div>
+                        <h3>Cash on Delivery</h3>
+                        <p>Pay in cash when your pizza arrives</p>
+                      </div>
+                    </label>
+                  </div>
+                )}
               </div>
             </div>
 
-            {/* Right Order Summary */}
             <div className="checkout-right-col">
               <div className="checkout-summary">
                 <div className="checkout-summary-head">
@@ -533,6 +652,13 @@ export default function Checkout() {
                     <strong>₹{computedSubtotal}</strong>
                   </div>
 
+                  {computedDiscount > 0 && (
+                    <div className="checkout-price-row">
+                      <span>Discount</span>
+                      <strong className="free-text">- ₹{computedDiscount}</strong>
+                    </div>
+                  )}
+
                   <div className="checkout-price-row">
                     <span>Delivery Fee</span>
                     <span className="free-text">
@@ -560,12 +686,16 @@ export default function Checkout() {
                     className="place-order-btn"
                   >
                     {loading
-                      ? paymentMethod === "Online"
-                        ? "Opening Payment..."
-                        : "Placing Order..."
-                      : paymentMethod === "Online"
-                        ? `Pay ₹${computedTotal} Online →`
-                        : "Place Order Now →"}
+                      ? isZeroOrder
+                        ? "Placing Free Order..."
+                        : paymentMethod === "Online"
+                          ? "Opening Payment..."
+                          : "Placing Order..."
+                      : isZeroOrder
+                        ? "Place Free Order (₹0) →"
+                        : paymentMethod === "Online"
+                          ? `Pay ₹${computedTotal} Online →`
+                          : "Place Order Now →"}
                   </button>
 
                   <p className="checkout-secure-note">

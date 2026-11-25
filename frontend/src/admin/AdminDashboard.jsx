@@ -20,6 +20,35 @@ const EMPTY_OTP_MODAL = {
   otpInput: "",
   error: "",
   submitting: false,
+  infoMsg: "",
+};
+
+const DEFAULT_STORE_SETTINGS = {
+  deliveryFee: 0,
+  discountType: "none",
+  discountValue: 0,
+  minOrderAmount: 0,
+};
+
+const normalizeStoreSettings = (raw) => {
+  const source = raw?.settings ? raw.settings : raw || {};
+  const discountType = ["none", "flat", "percentage"].includes(
+    source.discountType,
+  )
+    ? source.discountType
+    : "none";
+
+  let discountValue = Math.max(0, Number(source.discountValue ?? 0));
+  if (discountType === "percentage" && discountValue > 100) {
+    discountValue = 100;
+  }
+
+  return {
+    deliveryFee: Math.max(0, Number(source.deliveryFee ?? 0)),
+    discountType,
+    discountValue: Number.isFinite(discountValue) ? discountValue : 0,
+    minOrderAmount: Math.max(0, Number(source.minOrderAmount ?? 0)),
+  };
 };
 
 export default function AdminDashboard() {
@@ -30,6 +59,14 @@ export default function AdminDashboard() {
   const [ingredients, setIngredients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [liveConnected, setLiveConnected] = useState(false);
+
+  const [storeSettings, setStoreSettings] = useState(DEFAULT_STORE_SETTINGS);
+  const [savingSettings, setSavingSettings] = useState(false);
+
+  // Dropdown states inside Pizzas & Stock tab
+  const [openAddPizza, setOpenAddPizza] = useState(false);
+  const [openAddIng, setOpenAddIng] = useState(false);
+  const [openPricingBox, setOpenPricingBox] = useState(true);
 
   const [sendingOtpId, setSendingOtpId] = useState(null);
   const [otpBannerMsg, setOtpBannerMsg] = useState("");
@@ -66,13 +103,43 @@ export default function AdminDashboard() {
     return method.includes("cash") || method.includes("cod");
   };
 
+  const getCustomerName = (order) =>
+    order?.user?.name ||
+    order?.customerName ||
+    order?.shippingAddress?.name ||
+    "Guest";
+
+  const getCustomerEmail = (order) =>
+    order?.user?.email ||
+    order?.customerEmail ||
+    order?.email ||
+    order?.shippingAddress?.email ||
+    "";
+
+  // Strictly reads the mobile number saved on user's profile / order
+  const getOrderPhone = (order) => {
+    const candidates = [
+      order?.user?.phone,
+      order?.user?.mobile,
+      order?.phone,
+      order?.shippingAddress?.phone,
+    ];
+    for (const raw of candidates) {
+      if (!raw) continue;
+      const digits = String(raw).replace(/\D/g, "");
+      if (digits.length >= 10) return digits.slice(-10);
+    }
+    return "";
+  };
+
   const fetchData = async (showSpinner = false) => {
     try {
       if (showSpinner) setLoading(true);
-      const [ordersRes, ingRes, pizzasRes] = await Promise.all([
+      const [ordersRes, ingRes, pizzasRes, settingsRes] = await Promise.all([
         API.get("/orders"),
         API.get("/pizzas/ingredients"),
         API.get("/pizzas").catch(() => ({ data: [] })),
+        API.get("/settings").catch(() => ({ data: DEFAULT_STORE_SETTINGS })),
       ]);
 
       const orderList = Array.isArray(ordersRes.data)
@@ -88,6 +155,7 @@ export default function AdminDashboard() {
       setOrders(orderList);
       setIngredients(ingList);
       setPizzas(pizzaList);
+      setStoreSettings(normalizeStoreSettings(settingsRes?.data));
     } catch (error) {
       console.error("Error loading admin data:", error);
     } finally {
@@ -113,60 +181,115 @@ export default function AdminDashboard() {
           const exists = prev.some((o) => o._id === payload._id);
           return exists ? prev : [payload, ...prev];
         });
+
+        const buyerName = getCustomerName(payload);
+        const buyerEmail = getCustomerEmail(payload);
+        const shortId = String(payload._id || "")
+          .slice(-6)
+          .toUpperCase();
+        setOtpBannerMsg(
+          `📩 New Order #${shortId} placed by ${buyerName}${
+            buyerEmail ? ` (${buyerEmail})` : ""
+          }!`,
+        );
       }
       fetchData(false);
+    });
+
+    socket.on("storeSettingsUpdated", (updatedSettings) => {
+      setStoreSettings(normalizeStoreSettings(updatedSettings));
     });
 
     return () => {
       socket.off("connect");
       socket.off("disconnect");
       socket.off("newOrderPlaced");
+      socket.off("storeSettingsUpdated");
       socket.disconnect();
     };
   }, []);
 
-  const handleSendDeliveryOtp = async (order) => {
+  const handleSaveStoreSettings = async (e) => {
+    e.preventDefault();
+    try {
+      setSavingSettings(true);
+      const normalized = normalizeStoreSettings(storeSettings);
+      const { data } = await API.put("/settings", normalized);
+      setStoreSettings(normalizeStoreSettings(data));
+      setOtpBannerMsg(
+        "✅ Delivery fee & discount rules saved and synced live!",
+      );
+    } catch (error) {
+      alert(
+        error.response?.data?.message ||
+          "Failed to save delivery/discount rules",
+      );
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  // Sends 4-digit delivery OTP strictly to user's profile mobile number
+  const sendOtpToCustomer = async (
+    order,
+    { markOutForDelivery = true, openVerifyModal = false } = {},
+  ) => {
+    const customerPhone = getOrderPhone(order);
+    if (!customerPhone) {
+      alert(
+        "User profile mein mobile number save nahi hai. User ko apni profile mein mobile number update karne ke liye kahein.",
+      );
+      return false;
+    }
+
     try {
       setSendingOtpId(order._id);
       setOtpBannerMsg("");
 
       const { data } = await API.post(`/orders/${order._id}/send-otp`, {
-        markOutForDelivery: true,
+        markOutForDelivery,
+        phone: customerPhone,
       });
 
+      const nextStatus = data.orderStatus || getOrderStatus(order);
+      const nextOtpSentAt = data.otpSentAt || new Date().toISOString();
+
+      const updatedLocalOrder = {
+        ...order,
+        orderStatus: nextStatus,
+        otpSentAt: nextOtpSentAt,
+        isOtpVerified: false,
+      };
+
       setOrders((prev) =>
-        prev.map((o) =>
-          o._id === order._id
-            ? {
-                ...o,
-                orderStatus: data.orderStatus || "Sent to Delivery",
-                otpSentAt: data.otpSentAt || new Date().toISOString(),
-                isOtpVerified: false,
-              }
-            : o
-        )
+        prev.map((o) => (o._id === order._id ? updatedLocalOrder : o)),
       );
 
-      setOtpBannerMsg(
-        `✅ Delivery OTP sent to customer for Order #${String(order._id)
-          .slice(-6)
-          .toUpperCase()}! Ask customer for OTP to verify delivery.`
-      );
+      const bannerText = `📲 4-digit Delivery OTP sent to user's profile email and number +91 ${customerPhone} for Order #${String(
+        order._id,
+      )
+        .slice(-6)
+        .toUpperCase()}!`;
+      setOtpBannerMsg(bannerText);
+
+      if (openVerifyModal) {
+        setOtpModal({
+          open: true,
+          order: updatedLocalOrder,
+          otpInput: "",
+          error: "",
+          submitting: false,
+          infoMsg: `OTP sent to user's registered email and mobile +91 ${customerPhone}. Ask the customer for the 4-digit OTP and verify below.`,
+        });
+      }
+
+      return true;
     } catch (error) {
       alert(error.response?.data?.message || "Failed to send delivery OTP");
+      return false;
     } finally {
       setSendingOtpId(null);
     }
-  };
-
-  const openOtpModalForOrder = (order) => {
-    setOtpModal({
-      open: true,
-      order,
-      otpInput: "",
-      error: "",
-      submitting: false,
-    });
   };
 
   const closeOtpModal = () => {
@@ -177,13 +300,16 @@ export default function AdminDashboard() {
   const handleStatusChange = async (order, newStatus) => {
     const currentStatus = getOrderStatus(order);
 
-    // Require 4-digit OTP verification before marking order as Delivered
+    // When admin selects "Delivered": send OTP to user's profile mobile first, then open OTP verify modal
     if (
       newStatus === "Delivered" &&
       currentStatus !== "Delivered" &&
       !order.isOtpVerified
     ) {
-      openOtpModalForOrder(order);
+      await sendOtpToCustomer(order, {
+        markOutForDelivery: false,
+        openVerifyModal: true,
+      });
       return;
     }
 
@@ -216,8 +342,8 @@ export default function AdminDashboard() {
                 paymentStatus: updatedPaymentStatus,
                 isPaid: updatedPaymentStatus === "Paid",
               }
-            : o
-        )
+            : o,
+        ),
       );
     } catch (error) {
       alert(error.response?.data?.message || "Failed to update order status");
@@ -269,15 +395,15 @@ export default function AdminDashboard() {
                 paymentStatus: finalPaymentStatus,
                 isPaid: finalPaymentStatus === "Paid",
               }
-            : o
-        )
+            : o,
+        ),
       );
 
       setOtpModal(EMPTY_OTP_MODAL);
       setOtpBannerMsg(
         `🎉 OTP verified! Order #${String(targetOrder._id)
           .slice(-6)
-          .toUpperCase()} marked as Delivered.`
+          .toUpperCase()} marked as Delivered.`,
       );
     } catch (error) {
       setOtpModal((prev) => ({
@@ -311,8 +437,8 @@ export default function AdminDashboard() {
                 paymentStatus: savedPaymentStatus,
                 isPaid: savedPaymentStatus === "Paid",
               }
-            : o
-        )
+            : o,
+        ),
       );
     } catch (error) {
       alert(error.response?.data?.message || "Failed to update payment status");
@@ -365,8 +491,8 @@ export default function AdminDashboard() {
             ? typeof updatedPizza === "object" && updatedPizza?._id
               ? updatedPizza
               : { ...p, stock: nextStock }
-            : p
-        )
+            : p,
+        ),
       );
     } catch (error) {
       alert(error.response?.data?.message || "Failed to restock pizza");
@@ -380,7 +506,7 @@ export default function AdminDashboard() {
       });
       const updatedIng = data?.ingredient ? data.ingredient : data;
       setIngredients((prev) =>
-        prev.map((item) => (item._id === id ? updatedIng : item))
+        prev.map((item) => (item._id === id ? updatedIng : item)),
       );
     } catch (error) {
       alert("Failed to update stock");
@@ -447,11 +573,11 @@ export default function AdminDashboard() {
   };
 
   const lowPizzaStockCount = pizzas.filter(
-    (p) => Number(p.stock ?? 0) <= Number(p.threshold ?? 10)
+    (p) => Number(p.stock ?? 0) <= Number(p.threshold ?? 10),
   ).length;
 
   const lowIngStockCount = ingredients.filter(
-    (i) => Number(i.stock ?? 0) <= Number(i.threshold ?? 20)
+    (i) => Number(i.stock ?? 0) <= Number(i.threshold ?? 20),
   ).length;
 
   const lowStockCount = lowPizzaStockCount + lowIngStockCount;
@@ -462,11 +588,11 @@ export default function AdminDashboard() {
   }).length;
 
   const deliveredCount = orders.filter(
-    (o) => String(getOrderStatus(o)).toLowerCase() === "delivered"
+    (o) => String(getOrderStatus(o)).toLowerCase() === "delivered",
   ).length;
 
   const cancelledCount = orders.filter(
-    (o) => String(getOrderStatus(o)).toLowerCase() === "cancelled"
+    (o) => String(getOrderStatus(o)).toLowerCase() === "cancelled",
   ).length;
 
   const paymentPendingCount = orders.filter((o) => {
@@ -525,6 +651,20 @@ export default function AdminDashboard() {
     marginBottom: 5,
   };
 
+  const dropdownHeaderBtnStyle = {
+    width: "100%",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    background: "#f8fafc",
+    border: "1px solid #e2e8f0",
+    borderRadius: "12px",
+    padding: "12px 16px",
+    cursor: "pointer",
+    textAlign: "left",
+  };
+
   return (
     <div
       style={{
@@ -560,7 +700,9 @@ export default function AdminDashboard() {
           </h1>
 
           <p style={{ color: "#64748b", fontSize: 14, margin: 0 }}>
-            Send delivery OTPs, verify customer OTP on delivery, and manage pizza &amp; ingredient stocks.
+            Track who ordered pizzas by email &amp; phone, send delivery OTPs to
+            user&apos;s profile mobile, control delivery fee &amp; discounts,
+            and manage stocks.
           </p>
         </div>
 
@@ -600,7 +742,8 @@ export default function AdminDashboard() {
               </h2>
               <p style={{ margin: "0 0 6px", color: "#cbd5e1", fontSize: 13 }}>
                 {orders.length} total • {deliveredCount} delivered •{" "}
-                {cancelledCount} cancelled • {paymentPendingCount} payment pending
+                {cancelledCount} cancelled • {paymentPendingCount} payment
+                pending
               </p>
               <span
                 style={{
@@ -661,7 +804,7 @@ export default function AdminDashboard() {
           </div>
         </div>
 
-        {/* OTP Action Feedback Banner */}
+        {/* Status / OTP Feedback Banner */}
         {otpBannerMsg && (
           <div
             style={{
@@ -846,10 +989,15 @@ export default function AdminDashboard() {
                   Array.isArray(order.items) && order.items.length > 0
                     ? order.items
                     : order.orderItems || [];
-                const total = Number(order.totalAmount ?? order.totalPrice ?? 0);
+                const total = Number(
+                  order.totalAmount ?? order.totalPrice ?? 0,
+                );
                 const currentStatus = getOrderStatus(order);
                 const isCOD = isCodOrder(order);
                 const paymentStatus = getPaymentStatus(order);
+                const buyerName = getCustomerName(order);
+                const buyerEmail = getCustomerEmail(order);
+                const buyerPhone = getOrderPhone(order);
 
                 const isDelivered =
                   String(currentStatus).toLowerCase() === "delivered";
@@ -867,8 +1015,8 @@ export default function AdminDashboard() {
                       borderLeft: isCancelled
                         ? "5px solid #dc2626"
                         : isDelivered
-                        ? "5px solid #16a34a"
-                        : "1px solid #edf0f5",
+                          ? "5px solid #16a34a"
+                          : "1px solid #edf0f5",
                     }}
                   >
                     <div
@@ -897,8 +1045,8 @@ export default function AdminDashboard() {
                               color: "#172554",
                             }}
                           >
-                            Order #{String(order._id).slice(-6).toUpperCase()}{" "}
-                            — <span style={{ color: "#f97316" }}>₹{total}</span>
+                            Order #{String(order._id).slice(-6).toUpperCase()} —{" "}
+                            <span style={{ color: "#f97316" }}>₹{total}</span>
                           </h3>
 
                           <span
@@ -962,28 +1110,68 @@ export default function AdminDashboard() {
                           )}
                         </div>
 
-                        <p style={{ margin: 0, fontSize: 13, color: "#64748b" }}>
-                          Customer:{" "}
-                          <strong style={{ color: "#1e293b" }}>
-                            {order.user?.name || "Guest"}
-                          </strong>
-                          {order.user?.email ? ` (${order.user.email})` : ""} •
-                          📍 {formatAddress(order)}
-                        </p>
+                        {/* Ordered By User Info */}
+                        <div
+                          style={{
+                            background: "#f8fafc",
+                            border: "1px solid #e2e8f0",
+                            borderRadius: 10,
+                            padding: "8px 12px",
+                            marginBottom: 8,
+                            fontSize: 13,
+                            color: "#334155",
+                          }}
+                        >
+                          <span>
+                            Ordered by:{" "}
+                            <strong style={{ color: "#172554" }}>
+                              {buyerName}
+                            </strong>
+                          </span>{" "}
+                          •{" "}
+                          <span>
+                            📧 Email:{" "}
+                            <strong style={{ color: "#172554" }}>
+                              {buyerEmail || "Not available"}
+                            </strong>
+                          </span>{" "}
+                          •{" "}
+                          <span>
+                            📱 Profile Mobile:{" "}
+                            <strong style={{ color: "#172554" }}>
+                              {buyerPhone ? `+91 ${buyerPhone}` : "Not set"}
+                            </strong>
+                          </span>
+                          <div
+                            style={{
+                              marginTop: 4,
+                              fontSize: 12,
+                              color: "#64748b",
+                            }}
+                          >
+                            📍 {formatAddress(order)}
+                          </div>
+                        </div>
 
+                        {/* Out-for-Delivery OTP Action */}
                         {!isDelivered && !isCancelled && (
                           <div
                             style={{
                               display: "flex",
                               gap: 8,
                               flexWrap: "wrap",
-                              marginTop: 10,
+                              marginTop: 8,
                             }}
                           >
                             <button
                               type="button"
                               disabled={sendingOtpId === order._id}
-                              onClick={() => handleSendDeliveryOtp(order)}
+                              onClick={() =>
+                                sendOtpToCustomer(order, {
+                                  markOutForDelivery: true,
+                                  openVerifyModal: false,
+                                })
+                              }
                               style={{
                                 padding: "8px 13px",
                                 borderRadius: 9,
@@ -998,25 +1186,8 @@ export default function AdminDashboard() {
                               {sendingOtpId === order._id
                                 ? "Sending OTP..."
                                 : order.otpSentAt
-                                ? "🔁 Resend Delivery OTP"
-                                : "📤 Send Delivery OTP"}
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => openOtpModalForOrder(order)}
-                              style={{
-                                padding: "8px 13px",
-                                borderRadius: 9,
-                                border: "none",
-                                background: "#16a34a",
-                                color: "#fff",
-                                fontWeight: 700,
-                                fontSize: 12,
-                                cursor: "pointer",
-                              }}
-                            >
-                              🔐 Verify OTP &amp; Deliver
+                                  ? "🔁 Resend Delivery OTP"
+                                  : "📤 Send Delivery OTP"}
                             </button>
                           </div>
                         )}
@@ -1032,8 +1203,11 @@ export default function AdminDashboard() {
                         }}
                       >
                         <div style={{ minWidth: 175 }}>
-                          <label style={labelStyle}>Delivery / Order Status</label>
+                          <label style={labelStyle}>
+                            Delivery / Order Status
+                          </label>
                           <select
+                            disabled={sendingOtpId === order._id}
                             style={{
                               ...inputStyle,
                               cursor: "pointer",
@@ -1046,7 +1220,11 @@ export default function AdminDashboard() {
                           >
                             {ORDER_STATUSES.map((status) => (
                               <option key={status} value={status}>
-                                {status}
+                                {status === "Delivered" &&
+                                !isDelivered &&
+                                !order.isOtpVerified
+                                  ? "Delivered (Send OTP & Verify)"
+                                  : status}
                               </option>
                             ))}
                           </select>
@@ -1131,134 +1309,431 @@ export default function AdminDashboard() {
           </div>
         ) : (
           <div>
-            {/* Add New Pizza + Stock Form */}
+            {/* 1. Dropdown: Add New Pizza + Stock Form */}
             <div style={cardStyle}>
-              <h3
-                style={{ margin: "0 0 14px", fontSize: 18, color: "#172554" }}
+              <button
+                type="button"
+                onClick={() => setOpenAddPizza((prev) => !prev)}
+                style={dropdownHeaderBtnStyle}
               >
-                🍕 Add New Pizza &amp; Initial Stock
-              </h3>
-              <form
-                onSubmit={handleAddPizza}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(155px, 1fr))",
-                  gap: 12,
-                  alignItems: "end",
-                }}
-              >
-                <div>
-                  <label style={labelStyle}>Pizza Name *</label>
-                  <input
-                    style={inputStyle}
-                    required
-                    placeholder="e.g. Farmhouse Pizza"
-                    value={newPizza.name}
-                    onChange={(e) =>
-                      setNewPizza({ ...newPizza, name: e.target.value })
-                    }
-                  />
-                </div>
+                <span
+                  style={{ fontSize: 16, fontWeight: 800, color: "#172554" }}
+                >
+                  🍕 Add New Pizza &amp; Initial Stock
+                </span>
+                <span
+                  style={{ fontSize: 13, fontWeight: 700, color: "#f97316" }}
+                >
+                  {openAddPizza ? "Hide ▲" : "Open ▼"}
+                </span>
+              </button>
 
-                <div>
-                  <label style={labelStyle}>Category</label>
-                  <select
-                    style={inputStyle}
-                    value={newPizza.category}
-                    onChange={(e) =>
-                      setNewPizza({ ...newPizza, category: e.target.value })
-                    }
-                  >
-                    <option value="veg">Veg</option>
-                    <option value="non-veg">Non-Veg</option>
-                    <option value="special">Special</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label style={labelStyle}>Price (₹) *</label>
-                  <input
-                    style={inputStyle}
-                    type="number"
-                    min="0"
-                    required
-                    value={newPizza.price}
-                    onChange={(e) =>
-                      setNewPizza({ ...newPizza, price: Number(e.target.value) })
-                    }
-                  />
-                </div>
-
-                <div>
-                  <label style={labelStyle}>Initial Stock *</label>
-                  <input
-                    style={inputStyle}
-                    type="number"
-                    min="0"
-                    required
-                    value={newPizza.stock}
-                    onChange={(e) =>
-                      setNewPizza({ ...newPizza, stock: Number(e.target.value) })
-                    }
-                  />
-                </div>
-
-                <div>
-                  <label style={labelStyle}>Low Stock Alert</label>
-                  <input
-                    style={inputStyle}
-                    type="number"
-                    min="1"
-                    value={newPizza.threshold}
-                    onChange={(e) =>
-                      setNewPizza({
-                        ...newPizza,
-                        threshold: Number(e.target.value),
-                      })
-                    }
-                  />
-                </div>
-
-                <div>
-                  <label style={labelStyle}>Image URL</label>
-                  <input
-                    style={inputStyle}
-                    placeholder="https://..."
-                    value={newPizza.image}
-                    onChange={(e) =>
-                      setNewPizza({ ...newPizza, image: e.target.value })
-                    }
-                  />
-                </div>
-
-                <div style={{ gridColumn: "1 / -2" }}>
-                  <label style={labelStyle}>Description</label>
-                  <input
-                    style={inputStyle}
-                    placeholder="Short description of toppings and crust"
-                    value={newPizza.description}
-                    onChange={(e) =>
-                      setNewPizza({ ...newPizza, description: e.target.value })
-                    }
-                  />
-                </div>
-
-                <button
-                  type="submit"
+              {openAddPizza && (
+                <form
+                  onSubmit={handleAddPizza}
                   style={{
-                    padding: "11px 18px",
-                    border: "none",
-                    borderRadius: "11px",
-                    background: "#f97316",
-                    color: "#fff",
-                    fontWeight: 700,
-                    fontSize: 14,
-                    cursor: "pointer",
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(155px, 1fr))",
+                    gap: 12,
+                    alignItems: "end",
+                    marginTop: 14,
                   }}
                 >
-                  + Add Pizza
-                </button>
-              </form>
+                  <div>
+                    <label style={labelStyle}>Pizza Name *</label>
+                    <input
+                      style={inputStyle}
+                      required
+                      placeholder="e.g. Farmhouse Pizza"
+                      value={newPizza.name}
+                      onChange={(e) =>
+                        setNewPizza({ ...newPizza, name: e.target.value })
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label style={labelStyle}>Category</label>
+                    <select
+                      style={inputStyle}
+                      value={newPizza.category}
+                      onChange={(e) =>
+                        setNewPizza({ ...newPizza, category: e.target.value })
+                      }
+                    >
+                      <option value="veg">Veg</option>
+                      <option value="non-veg">Non-Veg</option>
+                      <option value="special">Special</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label style={labelStyle}>Price (₹) *</label>
+                    <input
+                      style={inputStyle}
+                      type="number"
+                      min="0"
+                      required
+                      value={newPizza.price}
+                      onChange={(e) =>
+                        setNewPizza({
+                          ...newPizza,
+                          price: Number(e.target.value),
+                        })
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label style={labelStyle}>Initial Stock *</label>
+                    <input
+                      style={inputStyle}
+                      type="number"
+                      min="0"
+                      required
+                      value={newPizza.stock}
+                      onChange={(e) =>
+                        setNewPizza({
+                          ...newPizza,
+                          stock: Number(e.target.value),
+                        })
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label style={labelStyle}>Low Stock Alert</label>
+                    <input
+                      style={inputStyle}
+                      type="number"
+                      min="1"
+                      value={newPizza.threshold}
+                      onChange={(e) =>
+                        setNewPizza({
+                          ...newPizza,
+                          threshold: Number(e.target.value),
+                        })
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label style={labelStyle}>Image URL</label>
+                    <input
+                      style={inputStyle}
+                      placeholder="https://..."
+                      value={newPizza.image}
+                      onChange={(e) =>
+                        setNewPizza({ ...newPizza, image: e.target.value })
+                      }
+                    />
+                  </div>
+
+                  <div style={{ gridColumn: "1 / -2" }}>
+                    <label style={labelStyle}>Description</label>
+                    <input
+                      style={inputStyle}
+                      placeholder="Short description of toppings and crust"
+                      value={newPizza.description}
+                      onChange={(e) =>
+                        setNewPizza({
+                          ...newPizza,
+                          description: e.target.value,
+                        })
+                      }
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    style={{
+                      padding: "11px 18px",
+                      border: "none",
+                      borderRadius: "11px",
+                      background: "#f97316",
+                      color: "#fff",
+                      fontWeight: 700,
+                      fontSize: 14,
+                      cursor: "pointer",
+                    }}
+                  >
+                    + Add Pizza
+                  </button>
+                </form>
+              )}
+            </div>
+
+            {/* 2. Dropdown: Add New Ingredient Form */}
+            <div style={cardStyle}>
+              <button
+                type="button"
+                onClick={() => setOpenAddIng((prev) => !prev)}
+                style={dropdownHeaderBtnStyle}
+              >
+                <span
+                  style={{ fontSize: 16, fontWeight: 800, color: "#172554" }}
+                >
+                  + Add New Ingredient Stock
+                </span>
+                <span
+                  style={{ fontSize: 13, fontWeight: 700, color: "#f97316" }}
+                >
+                  {openAddIng ? "Hide ▲" : "Open ▼"}
+                </span>
+              </button>
+
+              {openAddIng && (
+                <form
+                  onSubmit={handleAddIngredient}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(155px, 1fr))",
+                    gap: 12,
+                    alignItems: "end",
+                    marginTop: 14,
+                  }}
+                >
+                  <div>
+                    <label style={labelStyle}>Item Name</label>
+                    <input
+                      style={inputStyle}
+                      required
+                      placeholder="e.g. Garlic Crust"
+                      value={newIng.name}
+                      onChange={(e) =>
+                        setNewIng({ ...newIng, name: e.target.value })
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label style={labelStyle}>Category</label>
+                    <select
+                      style={inputStyle}
+                      value={newIng.category}
+                      onChange={(e) =>
+                        setNewIng({ ...newIng, category: e.target.value })
+                      }
+                    >
+                      <option value="base">Base</option>
+                      <option value="sauce">Sauce</option>
+                      <option value="cheese">Cheese</option>
+                      <option value="veggie">Veggie</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label style={labelStyle}>Price (₹)</label>
+                    <input
+                      style={inputStyle}
+                      type="number"
+                      min="0"
+                      required
+                      value={newIng.price}
+                      onChange={(e) =>
+                        setNewIng({ ...newIng, price: Number(e.target.value) })
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label style={labelStyle}>Initial Stock</label>
+                    <input
+                      style={inputStyle}
+                      type="number"
+                      min="0"
+                      required
+                      value={newIng.stock}
+                      onChange={(e) =>
+                        setNewIng({ ...newIng, stock: Number(e.target.value) })
+                      }
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    style={{
+                      padding: "11px 18px",
+                      border: "none",
+                      borderRadius: "11px",
+                      background: "#f97316",
+                      color: "#fff",
+                      fontWeight: 700,
+                      fontSize: 14,
+                      cursor: "pointer",
+                    }}
+                  >
+                    + Add Item
+                  </button>
+                </form>
+              )}
+            </div>
+
+            {/* 3. Dropdown: Delivery Fee & Discount Control */}
+            <div style={cardStyle}>
+              <button
+                type="button"
+                onClick={() => setOpenPricingBox((prev) => !prev)}
+                style={dropdownHeaderBtnStyle}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    gap: 10,
+                  }}
+                >
+                  <span
+                    style={{ fontSize: 16, fontWeight: 800, color: "#172554" }}
+                  >
+                    🏷️ Delivery Fee &amp; Discount Control
+                  </span>
+                  <span
+                    style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}
+                  >
+                    (
+                    {storeSettings.deliveryFee === 0
+                      ? "Free Delivery"
+                      : `₹${storeSettings.deliveryFee} Delivery`}{" "}
+                    •{" "}
+                    {storeSettings.discountType === "none" ||
+                    storeSettings.discountValue <= 0
+                      ? "No Discount"
+                      : storeSettings.discountType === "flat"
+                        ? `₹${storeSettings.discountValue} Off`
+                        : `${storeSettings.discountValue}% Off`}
+                    )
+                  </span>
+                </div>
+                <span
+                  style={{ fontSize: 13, fontWeight: 700, color: "#f97316" }}
+                >
+                  {openPricingBox ? "Hide ▲" : "Open ▼"}
+                </span>
+              </button>
+
+              {openPricingBox && (
+                <form
+                  onSubmit={handleSaveStoreSettings}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
+                    gap: 12,
+                    alignItems: "end",
+                    marginTop: 14,
+                  }}
+                >
+                  <div>
+                    <label style={labelStyle}>
+                      Delivery Fee (₹) — 0 = Free
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      style={inputStyle}
+                      value={storeSettings.deliveryFee}
+                      onChange={(e) =>
+                        setStoreSettings((prev) => ({
+                          ...prev,
+                          deliveryFee: Math.max(0, Number(e.target.value)),
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label style={labelStyle}>Discount Type</label>
+                    <select
+                      style={inputStyle}
+                      value={storeSettings.discountType}
+                      onChange={(e) => {
+                        const nextType = e.target.value;
+                        setStoreSettings((prev) => ({
+                          ...prev,
+                          discountType: nextType,
+                          discountValue:
+                            nextType === "none" ? 0 : prev.discountValue,
+                        }));
+                      }}
+                    >
+                      <option value="none">No Discount</option>
+                      <option value="flat">Flat Discount (₹)</option>
+                      <option value="percentage">
+                        Percentage Discount (%)
+                      </option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label style={labelStyle}>
+                      Discount Value{" "}
+                      {storeSettings.discountType === "percentage"
+                        ? "(%)"
+                        : storeSettings.discountType === "flat"
+                          ? "(₹)"
+                          : ""}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      max={
+                        storeSettings.discountType === "percentage"
+                          ? 100
+                          : undefined
+                      }
+                      disabled={storeSettings.discountType === "none"}
+                      style={inputStyle}
+                      value={storeSettings.discountValue}
+                      onChange={(e) => {
+                        const rawVal = Math.max(0, Number(e.target.value));
+                        const clamped =
+                          storeSettings.discountType === "percentage"
+                            ? Math.min(100, rawVal)
+                            : rawVal;
+                        setStoreSettings((prev) => ({
+                          ...prev,
+                          discountValue: clamped,
+                        }));
+                      }}
+                    />
+                  </div>
+
+                  <div>
+                    <label style={labelStyle}>Min Order for Discount (₹)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      disabled={storeSettings.discountType === "none"}
+                      style={inputStyle}
+                      value={storeSettings.minOrderAmount}
+                      onChange={(e) =>
+                        setStoreSettings((prev) => ({
+                          ...prev,
+                          minOrderAmount: Math.max(0, Number(e.target.value)),
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={savingSettings}
+                    style={{
+                      padding: "11px 18px",
+                      border: "none",
+                      borderRadius: "11px",
+                      background: "#172554",
+                      color: "#fff",
+                      fontWeight: 700,
+                      fontSize: 13.5,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {savingSettings ? "Saving..." : "Save Pricing Rules"}
+                  </button>
+                </form>
+              )}
             </div>
 
             {/* Pizza Menu Stock Grid */}
@@ -1372,7 +1847,9 @@ export default function AdminDashboard() {
 
                           <button
                             type="button"
-                            onClick={() => handleRestockPizza(pizza._id, pStock)}
+                            onClick={() =>
+                              handleRestockPizza(pizza._id, pStock)
+                            }
                             style={{
                               padding: "7px 12px",
                               border: "none",
@@ -1394,101 +1871,8 @@ export default function AdminDashboard() {
               </div>
             )}
 
-            {/* Add New Ingredient Form */}
-            <div style={cardStyle}>
-              <h3
-                style={{ margin: "0 0 14px", fontSize: 18, color: "#172554" }}
-              >
-                + Add New Ingredient Stock
-              </h3>
-              <form
-                onSubmit={handleAddIngredient}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(155px, 1fr))",
-                  gap: 12,
-                  alignItems: "end",
-                }}
-              >
-                <div>
-                  <label style={labelStyle}>Item Name</label>
-                  <input
-                    style={inputStyle}
-                    required
-                    placeholder="e.g. Garlic Crust"
-                    value={newIng.name}
-                    onChange={(e) =>
-                      setNewIng({ ...newIng, name: e.target.value })
-                    }
-                  />
-                </div>
-
-                <div>
-                  <label style={labelStyle}>Category</label>
-                  <select
-                    style={inputStyle}
-                    value={newIng.category}
-                    onChange={(e) =>
-                      setNewIng({ ...newIng, category: e.target.value })
-                    }
-                  >
-                    <option value="base">Base</option>
-                    <option value="sauce">Sauce</option>
-                    <option value="cheese">Cheese</option>
-                    <option value="veggie">Veggie</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label style={labelStyle}>Price (₹)</label>
-                  <input
-                    style={inputStyle}
-                    type="number"
-                    min="0"
-                    required
-                    value={newIng.price}
-                    onChange={(e) =>
-                      setNewIng({ ...newIng, price: Number(e.target.value) })
-                    }
-                  />
-                </div>
-
-                <div>
-                  <label style={labelStyle}>Initial Stock</label>
-                  <input
-                    style={inputStyle}
-                    type="number"
-                    min="0"
-                    required
-                    value={newIng.stock}
-                    onChange={(e) =>
-                      setNewIng({ ...newIng, stock: Number(e.target.value) })
-                    }
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  style={{
-                    padding: "11px 18px",
-                    border: "none",
-                    borderRadius: "11px",
-                    background: "#f97316",
-                    color: "#fff",
-                    fontWeight: 700,
-                    fontSize: 14,
-                    cursor: "pointer",
-                  }}
-                >
-                  + Add Item
-                </button>
-              </form>
-            </div>
-
             {/* Ingredient Inventory Grid */}
-            <h3
-              style={{ margin: "0 0 12px", fontSize: 18, color: "#172554" }}
-            >
+            <h3 style={{ margin: "0 0 12px", fontSize: 18, color: "#172554" }}>
               🧂 Custom Pizza Ingredients Stock ({ingredients.length})
             </h3>
             <div
@@ -1608,7 +1992,7 @@ export default function AdminDashboard() {
         )}
       </div>
 
-      {/* Delivery OTP Verification Modal */}
+      {/* Delivery OTP Verification Modal (Opens after sending OTP on Delivered) */}
       {otpModal.open && otpModal.order && (
         <div
           style={{
@@ -1644,15 +2028,13 @@ export default function AdminDashboard() {
               DELIVERY OTP VERIFICATION
             </p>
 
-            <h3
-              style={{ margin: "6px 0 8px", fontSize: 20, color: "#172554" }}
-            >
+            <h3 style={{ margin: "6px 0 8px", fontSize: 20, color: "#172554" }}>
               Verify Order #{String(otpModal.order._id).slice(-6).toUpperCase()}
             </h3>
 
             <p style={{ margin: "0 0 12px", fontSize: 13, color: "#64748b" }}>
-              Enter the 4-digit OTP shared by the customer to mark this order as
-              Delivered.
+              {otpModal.infoMsg ||
+                "4-digit OTP sent to user's profile mobile OR email. Enter it below to mark as Delivered."}
             </p>
 
             <div
@@ -1668,8 +2050,9 @@ export default function AdminDashboard() {
                 fontWeight: 600,
               }}
             >
-              📌 <strong>Note:</strong> Mark as <strong>Delivered</strong> only
-              after verifying the 4-digit OTP with the customer
+              📌 <strong>Note:</strong> Order will become{" "}
+              <strong>Delivered</strong> only after entering the 4-digit OTP
+              sent to the customer
               {isCodOrder(otpModal.order)
                 ? " and collecting Cash on Delivery payment."
                 : "."}
@@ -1722,42 +2105,72 @@ export default function AdminDashboard() {
                 style={{
                   display: "flex",
                   gap: 10,
-                  justifyContent: "flex-end",
+                  justifyContent: "space-between",
+                  alignItems: "center",
                   marginTop: 8,
                 }}
               >
                 <button
                   type="button"
-                  disabled={otpModal.submitting}
-                  onClick={closeOtpModal}
+                  disabled={
+                    otpModal.submitting || sendingOtpId === otpModal.order._id
+                  }
+                  onClick={() =>
+                    sendOtpToCustomer(otpModal.order, {
+                      markOutForDelivery: false,
+                      openVerifyModal: true,
+                    })
+                  }
                   style={{
-                    padding: "10px 16px",
+                    padding: "9px 12px",
                     borderRadius: 10,
-                    border: "1px solid #e2e8f0",
-                    background: "#fff",
-                    color: "#475569",
+                    border: "1px solid #c7d2fe",
+                    background: "#eef2ff",
+                    color: "#3730a3",
                     fontWeight: 700,
+                    fontSize: 12,
                     cursor: "pointer",
                   }}
                 >
-                  Cancel
+                  {sendingOtpId === otpModal.order._id
+                    ? "Sending..."
+                    : "🔁 Resend OTP"}
                 </button>
 
-                <button
-                  type="submit"
-                  disabled={otpModal.submitting}
-                  style={{
-                    padding: "10px 18px",
-                    borderRadius: 10,
-                    border: "none",
-                    background: "#f97316",
-                    color: "#fff",
-                    fontWeight: 700,
-                    cursor: "pointer",
-                  }}
-                >
-                  {otpModal.submitting ? "Verifying..." : "Verify & Deliver"}
-                </button>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    type="button"
+                    disabled={otpModal.submitting}
+                    onClick={closeOtpModal}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 10,
+                      border: "1px solid #e2e8f0",
+                      background: "#fff",
+                      color: "#475569",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={otpModal.submitting}
+                    style={{
+                      padding: "10px 16px",
+                      borderRadius: 10,
+                      border: "none",
+                      background: "#f97316",
+                      color: "#fff",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {otpModal.submitting ? "Verifying..." : "Verify & Deliver"}
+                  </button>
+                </div>
               </div>
             </form>
           </div>

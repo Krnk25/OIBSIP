@@ -1,16 +1,31 @@
 import cors from "cors";
 import dotenv from "dotenv";
 import express from "express";
+import fs from "fs";
 import http from "http";
 import mongoose from "mongoose";
 import dns from "node:dns";
+import path from "path";
 import { Server } from "socket.io";
+import { fileURLToPath } from "url";
+import settingRoutes from "./routes/settingRoutes.js";
+// ...
+
 
 // Force Node.js to use Google DNS to bypass local ISP/Hotspot SRV blocks
 dns.setServers(["8.8.8.8", "8.8.4.4"]);
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const envCandidates = [
+  path.join(__dirname, ".env"),
+  path.join(__dirname, "..", ".env"),
+];
+const envPath = envCandidates.find((p) => fs.existsSync(p));
+
 // Load environment variables
-dotenv.config();
+dotenv.config(envPath ? { path: envPath } : undefined);
 
 // Database
 import connectDB from "./config/db.js";
@@ -45,12 +60,16 @@ process.on("unhandledRejection", (reason) => {
 console.log("=================================");
 console.log("SERVER ENVIRONMENT CHECK");
 console.log("=================================");
+console.log("ENV PATH:", envPath || "NOT FOUND ❌");
 console.log("PORT:", process.env.PORT || "5000 (Default)");
 console.log("MONGO_URI:", process.env.MONGO_URI ? "YES ✅" : "NO ❌");
 console.log("MONGODB_URI:", process.env.MONGODB_URI ? "YES ✅" : "NO ❌");
 console.log("JWT_SECRET:", process.env.JWT_SECRET ? "YES ✅" : "NO ❌");
 console.log("EMAIL_USER:", process.env.EMAIL_USER ? "YES ✅" : "NO ❌");
 console.log("EMAIL_PASS:", process.env.EMAIL_PASS ? "YES ✅" : "NO ❌");
+console.log("RAZORPAY_KEY_ID:", process.env.RAZORPAY_KEY_ID ? "YES ✅" : "NO ❌");
+console.log("RAZORPAY_KEY_SECRET:", process.env.RAZORPAY_KEY_SECRET ? "YES ✅" : "NO ❌");
+console.log("FAST2SMS_API_KEY:", process.env.FAST2SMS_API_KEY ? "YES ✅" : "NO ❌");
 console.log("=================================\n");
 
 // ========================================
@@ -133,6 +152,7 @@ app.get("/api", (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/pizzas", pizzaRoutes);
 app.use("/api/orders", orderRoutes);
+app.use("/api/settings", settingRoutes);
 
 // ========================================
 // 404 ROUTE NOT FOUND HANDLER

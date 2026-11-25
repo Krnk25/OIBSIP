@@ -2,22 +2,23 @@ import crypto from "crypto";
 import Razorpay from "razorpay";
 import Ingredient from "../models/Ingredient.js";
 import Order from "../models/Order.js";
+import User from "../models/User.js";
+import { sendDeliveryOtpEmail } from "../utils/sendDeliveryOtpEmail.js";
+import { sendNewOrderEmailToAdmin } from "../utils/sendOrderEmail.js";
 import { sendDeliveryOtpSms } from "../utils/sendSms.js";
 
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID || "rzp_test_placeholder",
-  key_secret: process.env.RAZORPAY_KEY_SECRET || "secret_placeholder",
-});
-
 // Helper: Generate 4-digit delivery OTP
-const generateDeliveryOtp = () =>
-  String(crypto.randomInt(1000, 10000));
+const generateDeliveryOtp = () => String(crypto.randomInt(1000, 10000));
 
-// Helper: Extract 10-digit Indian mobile number from order or user
-const extractIndianPhone = (order) => {
+// Helper: Extract 10-digit Indian mobile number from request, order, or user
+const extractIndianPhone = (order, extraPhone = "") => {
   const candidates = [
+    extraPhone,
     order?.shippingAddress?.phone,
+    order?.shippingAddress?.mobile,
     order?.phone,
+    order?.mobile,
+    order?.user?.mobile,
     order?.user?.phone,
     order?.deliveryAddress,
   ];
@@ -26,7 +27,10 @@ const extractIndianPhone = (order) => {
     if (!raw) continue;
     const digits = String(raw).replace(/\D/g, "");
     if (digits.length >= 10) {
-      return digits.slice(-10);
+      const tenDigits = digits.slice(-10);
+      if (/^[6-9]\d{9}$/.test(tenDigits)) {
+        return tenDigits;
+      }
     }
   }
   return "";
@@ -120,14 +124,34 @@ const emitOrderSocketEvents = (req, order, extraOtpPayload = null) => {
   io.emit(`orderStatusUpdated_${order._id}`, order);
 };
 
-// @desc    Create a direct / COD order
+// Helper: Notify admin by email with customer + pizza details
+const triggerAdminOrderEmail = async (order, reqUser) => {
+  try {
+    let customer = reqUser || null;
+    if (!customer && order?.user) {
+      customer = await User.findById(order.user).select(
+        "name email phone mobile"
+      );
+    } else if (reqUser?._id && (!reqUser.name || !reqUser.email)) {
+      const dbUser = await User.findById(reqUser._id).select(
+        "name email phone mobile"
+      );
+      if (dbUser) customer = dbUser;
+    }
+
+    await sendNewOrderEmailToAdmin({ order, customer });
+  } catch (emailErr) {
+    console.error("Admin order email error:", emailErr.message);
+  }
+};
+
+// @desc    Create a direct / COD / ₹0 Free order
 // @route   POST /api/orders
 export const createOrder = async (req, res) => {
   try {
     const rawItems = req.body.orderItems || req.body.items || [];
     const rawAddress = req.body.deliveryAddress ?? req.body.shippingAddress;
-    const paymentMethod = req.body.paymentMethod || "Cash on Delivery";
-    const totalAmount = Number(req.body.totalAmount ?? req.body.totalPrice ?? 0);
+    const rawTotal = Number(req.body.totalAmount ?? req.body.totalPrice ?? 0);
 
     if (!Array.isArray(rawItems) || rawItems.length === 0) {
       return res.status(400).json({ message: "No order items provided" });
@@ -138,24 +162,51 @@ export const createOrder = async (req, res) => {
       return res.status(400).json({ message: "Delivery address is required" });
     }
 
-    if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
+    if (!Number.isFinite(rawTotal) || rawTotal < 0) {
       return res.status(400).json({ message: "Valid totalAmount is required" });
     }
+
+    const totalAmount = Math.max(0, rawTotal);
+    const paymentMethod =
+      totalAmount === 0
+        ? req.body.paymentMethod || "Free Order"
+        : req.body.paymentMethod || "Cash on Delivery";
+
+    const phone10 = extractIndianPhone(
+      {
+        shippingAddress: rawAddress,
+        phone: req.body.phone,
+        mobile: req.body.mobile,
+        user: req.user,
+        deliveryAddress,
+      },
+      req.body?.phone || req.body?.mobile
+    );
+
+    const normalizedShippingAddress =
+      rawAddress && typeof rawAddress === "object"
+        ? {
+            ...rawAddress,
+            ...(phone10 ? { phone: rawAddress.phone || phone10 } : {}),
+          }
+        : undefined;
 
     await deductCustomIngredientStock(rawItems);
 
     const items = formatOrderItems(rawItems);
     const isOnline = String(paymentMethod).toLowerCase() === "online";
     const paymentStatus =
-      req.body.paymentStatus || (isOnline ? "Paid" : "Pending");
+      totalAmount === 0
+        ? "Paid"
+        : req.body.paymentStatus || (isOnline ? "Paid" : "Pending");
     const deliveryOtp = generateDeliveryOtp();
 
     const newOrder = await Order.create({
       user: req.user._id,
       items,
       deliveryAddress,
-      shippingAddress:
-        rawAddress && typeof rawAddress === "object" ? rawAddress : undefined,
+      shippingAddress: normalizedShippingAddress,
+      ...(phone10 ? { phone: phone10 } : {}),
       totalAmount,
       paymentMethod,
       paymentStatus,
@@ -167,6 +218,8 @@ export const createOrder = async (req, res) => {
       deliveryOtp,
       isOtpVerified: false,
     });
+
+    await triggerAdminOrderEmail(newOrder, req.user);
 
     const io = req.app.get("io");
     if (io) {
@@ -192,17 +245,38 @@ export const createRazorpayOrder = async (req, res) => {
       return res.status(400).json({ message: "Invalid order amount" });
     }
 
-    const order = await razorpay.orders.create({
+    const keyId = process.env.RAZORPAY_KEY_ID;
+    const keySecret = process.env.RAZORPAY_KEY_SECRET;
+
+    if (!keyId || !keySecret) {
+      console.error("Missing RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET in .env");
+      return res.status(500).json({
+        message: "Razorpay keys are missing in backend .env configuration",
+      });
+    }
+
+    const razorpayInstance = new Razorpay({
+      key_id: keyId,
+      key_secret: keySecret,
+    });
+
+    const order = await razorpayInstance.orders.create({
       amount: Math.round(amount * 100),
       currency: "INR",
       receipt: `receipt_${Date.now()}`,
     });
 
-    return res.status(200).json(order);
+    return res.status(200).json({
+      ...order,
+      keyId,
+    });
   } catch (error) {
+    console.error("createRazorpayOrder error:", error);
     return res.status(500).json({
-      message: "Razorpay order creation failed",
-      error: error.message,
+      message:
+        error?.error?.description ||
+        error?.message ||
+        "Razorpay order creation failed",
     });
   }
 };
@@ -223,6 +297,12 @@ export const verifyAndPlaceOrder = async (req, res) => {
       totalPrice,
     } = req.body;
 
+    if (!process.env.RAZORPAY_KEY_SECRET) {
+      return res.status(500).json({
+        message: "RAZORPAY_KEY_SECRET is missing in backend .env configuration",
+      });
+    }
+
     const payload = `${razorpay_order_id}|${razorpay_payment_id}`;
     const expectedSignature = crypto
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
@@ -238,11 +318,30 @@ export const verifyAndPlaceOrder = async (req, res) => {
     const sourceItems = items.length > 0 ? items : orderItems;
     const addressInput = rawAddress ?? shippingAddress;
     const deliveryAddress = formatDeliveryAddress(addressInput);
-    const totalAmount = Number(rawTotal ?? totalPrice ?? 0);
+    const totalAmount = Math.max(0, Number(rawTotal ?? totalPrice ?? 0));
 
     if (!deliveryAddress) {
       return res.status(400).json({ message: "Delivery address is required" });
     }
+
+    const phone10 = extractIndianPhone(
+      {
+        shippingAddress: addressInput,
+        phone: req.body.phone,
+        mobile: req.body.mobile,
+        user: req.user,
+        deliveryAddress,
+      },
+      req.body?.phone || req.body?.mobile
+    );
+
+    const normalizedShippingAddress =
+      addressInput && typeof addressInput === "object"
+        ? {
+            ...addressInput,
+            ...(phone10 ? { phone: addressInput.phone || phone10 } : {}),
+          }
+        : undefined;
 
     await deductCustomIngredientStock(sourceItems);
 
@@ -253,10 +352,8 @@ export const verifyAndPlaceOrder = async (req, res) => {
       user: req.user._id,
       items: formattedItems,
       deliveryAddress,
-      shippingAddress:
-        addressInput && typeof addressInput === "object"
-          ? addressInput
-          : undefined,
+      shippingAddress: normalizedShippingAddress,
+      ...(phone10 ? { phone: phone10 } : {}),
       totalAmount,
       paymentMethod: "Online",
       paymentStatus: "Paid",
@@ -271,6 +368,8 @@ export const verifyAndPlaceOrder = async (req, res) => {
       deliveryOtp,
       isOtpVerified: false,
     });
+
+    await triggerAdminOrderEmail(newOrder, req.user);
 
     const io = req.app.get("io");
     if (io) {
@@ -305,7 +404,7 @@ export const getMyOrders = async (req, res) => {
 export const getAllOrders = async (req, res) => {
   try {
     const orders = await Order.find()
-      .populate("user", "name email phone")
+      .populate("user", "name email phone mobile")
       .sort({ createdAt: -1 });
     return res.status(200).json(orders);
   } catch (error) {
@@ -313,13 +412,42 @@ export const getAllOrders = async (req, res) => {
   }
 };
 
-// @desc    Generate & send 4-digit delivery OTP via SMS + Socket.io (Admin)
+// @desc    Send / resend order summary email to admin (Admin)
+// @route   POST /api/orders/:id/notify-email
+export const notifyOrderByEmail = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id).populate(
+      "user",
+      "name email phone mobile"
+    );
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    const result = await sendNewOrderEmailToAdmin({
+      order,
+      customer: order.user,
+    });
+
+    return res.status(200).json({
+      message: result.sent
+        ? `Order details emailed to admin (${result.to})`
+        : `Order details logged (${result.reason})`,
+      ...result,
+    });
+  } catch (error) {
+    console.error("notifyOrderByEmail error:", error);
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Generate & send 4-digit delivery OTP via Email (+ optional SMS & Socket.io)
 // @route   POST /api/orders/:id/send-otp
 export const sendDeliveryOtp = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id).populate(
       "user",
-      "name email phone"
+      "name email phone mobile"
     );
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
@@ -335,6 +463,33 @@ export const sendDeliveryOtp = async (req, res) => {
         .json({ message: "Cancelled order cannot receive OTP" });
     }
 
+    const phone10 = extractIndianPhone(
+      order,
+      req.body?.phone || req.body?.mobile
+    );
+    const customerEmail = String(
+      order.user?.email || req.body?.email || order.email || ""
+    ).trim();
+    const customerName = String(order.user?.name || "Customer").trim();
+
+    if (!customerEmail && !phone10) {
+      return res.status(400).json({
+        message:
+          "Customer email or 10-digit mobile number is required to send delivery OTP.",
+      });
+    }
+
+    if (phone10) {
+      if (order.shippingAddress && typeof order.shippingAddress === "object") {
+        if (!order.shippingAddress.phone) {
+          order.shippingAddress.phone = phone10;
+        }
+      }
+      if (!order.phone) {
+        order.phone = phone10;
+      }
+    }
+
     const otp = generateDeliveryOtp();
     const otpSentAt = new Date();
 
@@ -348,33 +503,62 @@ export const sendDeliveryOtp = async (req, res) => {
 
     await order.save();
 
-    const phone10 = extractIndianPhone(order);
-    let smsStatus = { sent: false, reason: "Customer phone number not found" };
+    let emailStatus = { sent: false, reason: "Customer email not available" };
+    if (customerEmail) {
+      try {
+        emailStatus = await sendDeliveryOtpEmail({
+          to: customerEmail,
+          customerName,
+          otp,
+          orderId: order._id,
+          phone: phone10,
+        });
+      } catch (emailErr) {
+        console.error("❌ Delivery OTP Email error:", emailErr.message);
+        emailStatus = { sent: false, reason: emailErr.message };
+      }
+    }
 
-    if (phone10 && typeof sendDeliveryOtpSms === "function") {
+    let smsStatus = { sent: false, reason: "Skipped (Email OTP enabled)" };
+    if (
+      phone10 &&
+      String(process.env.FAST2SMS_API_KEY || "").trim() &&
+      typeof sendDeliveryOtpSms === "function"
+    ) {
       try {
         smsStatus = await sendDeliveryOtpSms(phone10, otp, order._id);
       } catch (smsErr) {
-        console.error("Delivery OTP SMS error:", smsErr.message);
+        console.error("⚠️ Delivery OTP SMS skipped/failed:", smsErr.message);
         smsStatus = { sent: false, reason: smsErr.message };
       }
     }
 
     emitOrderSocketEvents(req, order, {
       orderId: order._id,
+      phone: phone10,
+      email: customerEmail,
       deliveryOtp: otp,
       otpSentAt,
       orderStatus: order.orderStatus,
     });
 
+    const deliveredVia = [
+      emailStatus.sent ? `Email (${customerEmail})` : null,
+      smsStatus.sent ? `SMS (+91 ${phone10})` : null,
+    ].filter(Boolean);
+
     return res.status(200).json({
-      message: smsStatus.sent
-        ? `Delivery OTP sent to mobile ending in ${phone10.slice(-4)}!`
-        : "Delivery OTP generated and synced to customer order.",
+      message:
+        deliveredVia.length > 0
+          ? `Delivery OTP sent via ${deliveredVia.join(" & ")}!`
+          : `Delivery OTP generated (${otp}) and synced to order.`,
       orderId: order._id,
+      phone: phone10,
+      email: customerEmail,
       deliveryOtp: otp,
       otpSentAt,
       orderStatus: order.orderStatus,
+      emailStatus,
       smsStatus,
     });
   } catch (error) {

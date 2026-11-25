@@ -5,9 +5,10 @@ import API from '../services/api';
 
 const ADDRESS_KEY = 'pizzaDeliveryAddresses';
 const MOBILE_KEY = 'pizzaUserMobile';
+const PROFILE_ENDPOINTS = ['/users/profile', '/auth/profile', '/user/profile'];
 
 export default function Profile() {
-  const { user, logout } = useAuth();
+  const { user, logout, setUser } = useAuth();
   const navigate = useNavigate();
 
   const [profile, setProfile] = useState({
@@ -29,7 +30,9 @@ export default function Profile() {
   const [ordersCount, setOrdersCount] = useState(0);
   const [totalSpent, setTotalSpent] = useState(0);
   const [loadingStats, setLoadingStats] = useState(true);
+  const [savingProfile, setSavingProfile] = useState(false);
   const [message, setMessage] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
     const savedMobile = localStorage.getItem(MOBILE_KEY) || '';
@@ -84,11 +87,114 @@ export default function Profile() {
     localStorage.setItem(ADDRESS_KEY, JSON.stringify(updated));
   };
 
-  const handleProfileSave = (e) => {
+  const syncUpdatedUser = (updatedUserData) => {
+    if (!updatedUserData || typeof updatedUserData !== 'object') return;
+    const mergedUser = {
+      ...(user || {}),
+      ...updatedUserData,
+    };
+
+    if (typeof setUser === 'function') {
+      setUser(mergedUser);
+    }
+
+    ['pizzaUser', 'userInfo', 'user'].forEach((key) => {
+      try {
+        const existingRaw = localStorage.getItem(key);
+        if (existingRaw) {
+          const parsed = JSON.parse(existingRaw);
+          localStorage.setItem(
+            key,
+            JSON.stringify({
+              ...(typeof parsed === 'object' && parsed !== null ? parsed : {}),
+              ...updatedUserData,
+            })
+          );
+        }
+      } catch {
+        // ignore storage parse error
+      }
+    });
+  };
+
+  const handleProfileSave = async (e) => {
     e.preventDefault();
-    localStorage.setItem(MOBILE_KEY, profile.mobile.trim());
-    setMessage('Profile & mobile number saved for checkout.');
-    setTimeout(() => setMessage(''), 3000);
+    setMessage('');
+    setErrorMsg('');
+
+    const cleanMobile = profile.mobile.replace(/\D/g, '').slice(-10);
+    if (cleanMobile && !/^[6-9]\d{9}$/.test(cleanMobile)) {
+      setErrorMsg('Please enter a valid 10-digit mobile number.');
+      return;
+    }
+
+    const payload = {
+      name: profile.name.trim(),
+      email: profile.email.trim(),
+      mobile: cleanMobile,
+      phone: cleanMobile,
+    };
+
+    try {
+      setSavingProfile(true);
+
+      let responseData = null;
+      let routeMissing = false;
+
+      for (const endpoint of PROFILE_ENDPOINTS) {
+        try {
+          const { data } = await API.put(endpoint, payload);
+          responseData = data;
+          routeMissing = false;
+          break;
+        } catch (err) {
+          if (err.response?.status === 404) {
+            routeMissing = true;
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      const savedUser = responseData?.user || responseData || payload;
+      const finalMobile =
+        savedUser?.mobile || savedUser?.phone || cleanMobile || '';
+
+      setProfile((prev) => ({
+        ...prev,
+        name: savedUser?.name || payload.name,
+        email: savedUser?.email || payload.email,
+        mobile: finalMobile,
+      }));
+
+      if (finalMobile) {
+        localStorage.setItem(MOBILE_KEY, finalMobile);
+      } else {
+        localStorage.removeItem(MOBILE_KEY);
+      }
+
+      syncUpdatedUser({
+        ...payload,
+        mobile: finalMobile,
+        phone: finalMobile,
+      });
+
+      if (routeMissing) {
+        setMessage(
+          'Mobile number saved locally. Add PUT /api/users/profile in backend so it persists in DB for OTP.'
+        );
+      } else {
+        setMessage('Profile & mobile number saved to your account.');
+      }
+      setTimeout(() => setMessage(''), 4000);
+    } catch (error) {
+      setErrorMsg(
+        error.response?.data?.message ||
+          'Failed to save profile on server. Please check backend profile route.'
+      );
+    } finally {
+      setSavingProfile(false);
+    }
   };
 
   const handleAddressSave = (e) => {
@@ -468,10 +574,10 @@ export default function Profile() {
                   onChange={(e) =>
                     setProfile({
                       ...profile,
-                      mobile: e.target.value,
+                      mobile: e.target.value.replace(/\D/g, '').slice(0, 10),
                     })
                   }
-                  placeholder="Enter mobile number"
+                  placeholder="Enter 10-digit mobile number"
                   maxLength={10}
                 />
               </div>
@@ -479,17 +585,39 @@ export default function Profile() {
 
             <button
               type="submit"
+              disabled={savingProfile}
               style={{
                 ...primaryButton,
                 marginTop: 20,
+                opacity: savingProfile ? 0.7 : 1,
               }}
             >
-              Save Profile
+              {savingProfile ? 'Saving...' : 'Save Profile'}
             </button>
 
             {message && (
-              <p style={{ color: '#059669', fontSize: 13, marginTop: 10 }}>
+              <p
+                style={{
+                  color: '#059669',
+                  fontSize: 13,
+                  marginTop: 10,
+                  fontWeight: 600,
+                }}
+              >
                 {message}
+              </p>
+            )}
+
+            {errorMsg && (
+              <p
+                style={{
+                  color: '#dc2626',
+                  fontSize: 13,
+                  marginTop: 10,
+                  fontWeight: 600,
+                }}
+              >
+                {errorMsg}
               </p>
             )}
           </form>
