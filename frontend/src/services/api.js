@@ -11,7 +11,7 @@ const API_BASE_URL = String(
 const API = axios.create({
   baseURL: API_BASE_URL,
   withCredentials: true,
-  timeout: 20000,
+  timeout: 60000,
 });
 
 const getStoredToken = () => {

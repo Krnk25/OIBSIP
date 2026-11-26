@@ -259,9 +259,17 @@ export default function Checkout() {
           finalizeAfterOrderSuccess(verifyData.order);
         } catch (verifyErr) {
           console.error("Payment verification error:", verifyErr);
+          const isTimeout =
+            verifyErr?.code === "ECONNABORTED" ||
+            String(verifyErr?.message || "")
+              .toLowerCase()
+              .includes("timeout");
+
           alert(
-            verifyErr.response?.data?.message ||
-              "Payment verification failed! Please contact support.",
+            isTimeout
+              ? "Server took too long to verify payment. Please check My Orders after a few seconds."
+              : verifyErr.response?.data?.message ||
+                  "Payment verification failed! Please contact support.",
           );
         } finally {
           setLoading(false);
@@ -348,7 +356,17 @@ export default function Checkout() {
       setLoading(false);
     } catch (error) {
       console.error("Order submit error:", error);
-      alert(error.response?.data?.message || "Failed to place order");
+      const isTimeout =
+        error?.code === "ECONNABORTED" ||
+        String(error?.message || "")
+          .toLowerCase()
+          .includes("timeout");
+
+      alert(
+        isTimeout
+          ? "Server is taking too long to respond (backend may be waking up). Please wait a few seconds and try again."
+          : error.response?.data?.message || "Failed to place order",
+      );
       setLoading(false);
     }
   };
@@ -588,7 +606,9 @@ export default function Checkout() {
                             name="payment"
                             value="Cash on Delivery"
                             checked={paymentMethod === "Cash on Delivery"}
-                            onChange={() => setPaymentMethod("Cash on Delivery")}
+                            onChange={() =>
+                              setPaymentMethod("Cash on Delivery")
+                            }
                           />
                         </div>
                         <div>
@@ -666,7 +686,9 @@ export default function Checkout() {
                   {computedDiscount > 0 && (
                     <div className="checkout-price-row">
                       <span>Discount</span>
-                      <strong className="free-text">- ₹{computedDiscount}</strong>
+                      <strong className="free-text">
+                        - ₹{computedDiscount}
+                      </strong>
                     </div>
                   )}
 
