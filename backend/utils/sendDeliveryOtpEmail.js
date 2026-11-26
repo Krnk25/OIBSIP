@@ -11,6 +11,9 @@ const createMailTransporter = () => {
   return nodemailer.createTransport({
     service: "gmail",
     auth: { user, pass },
+    connectionTimeout: 8000,
+    greetingTimeout: 8000,
+    socketTimeout: 10000,
   });
 };
 
@@ -73,12 +76,21 @@ export const sendDeliveryOtpEmail = async ({
     `,
   };
 
-  const info = await transporter.sendMail(mailOptions);
-
-  return {
-    sent: true,
-    provider: "email",
-    to: cleanEmail,
-    messageId: info.messageId,
-  };
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    return {
+      sent: true,
+      provider: "email",
+      to: cleanEmail,
+      messageId: info.messageId,
+    };
+  } catch (err) {
+    console.error("❌ sendDeliveryOtpEmail error:", err.message);
+    return {
+      sent: false,
+      provider: "email",
+      to: cleanEmail,
+      reason: err.message,
+    };
+  }
 };

@@ -169,8 +169,15 @@ export const sendNewOrderEmailToAdmin = async ({ order, customer }) => {
     };
   }
 
+  const transportOptions = {
+    connectionTimeout: 8000,
+    greetingTimeout: 8000,
+    socketTimeout: 10000,
+  };
+
   const transporter = smtpHost
     ? nodemailer.createTransport({
+        ...transportOptions,
         host: smtpHost,
         port: Number(process.env.SMTP_PORT || 587),
         secure: String(process.env.SMTP_SECURE || "false") === "true",
@@ -178,6 +185,7 @@ export const sendNewOrderEmailToAdmin = async ({ order, customer }) => {
           smtpUser && smtpPass ? { user: smtpUser, pass: smtpPass } : undefined,
       })
     : nodemailer.createTransport({
+        ...transportOptions,
         service: "gmail",
         auth: {
           user: smtpUser,
@@ -185,17 +193,26 @@ export const sendNewOrderEmailToAdmin = async ({ order, customer }) => {
         },
       });
 
-  const info = await transporter.sendMail({
-    from: process.env.EMAIL_FROM || smtpUser || `"PizzaZone" <${adminEmail}>`,
-    to: adminEmail,
-    subject,
-    text,
-    html,
-  });
+  try {
+    const info = await transporter.sendMail({
+      from: process.env.EMAIL_FROM || smtpUser || `"PizzaZone" <${adminEmail}>`,
+      to: adminEmail,
+      subject,
+      text,
+      html,
+    });
 
-  return {
-    sent: true,
-    to: adminEmail,
-    messageId: info.messageId,
-  };
+    return {
+      sent: true,
+      to: adminEmail,
+      messageId: info.messageId,
+    };
+  } catch (err) {
+    console.error("❌ sendNewOrderEmailToAdmin error:", err.message);
+    return {
+      sent: false,
+      to: adminEmail,
+      reason: err.message,
+    };
+  }
 };

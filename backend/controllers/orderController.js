@@ -61,7 +61,8 @@ const formatOrderItems = (rawItems = []) =>
   rawItems.map((item) => {
     const qty = Number(item.quantity ?? item.qty ?? 1);
     const price = Number(item.price ?? item.unitPrice ?? 0);
-    const pizzaId = item.pizza?._id || item.pizza || (!item.isCustom ? item._id : undefined);
+    const pizzaId =
+      item.pizza?._id || item.pizza || (!item.isCustom ? item._id : undefined);
 
     return {
       ...(pizzaId ? { pizza: pizzaId } : {}),
@@ -147,25 +148,27 @@ const emitOrderSocketEvents = (req, order, extraOtpPayload = null) => {
   io.emit(`orderStatusUpdated_${order._id}`, order);
 };
 
-// Helper: Notify admin by email with customer + pizza details
-const triggerAdminOrderEmail = async (order, reqUser) => {
-  try {
-    let customer = reqUser || null;
-    if (!customer && order?.user) {
-      customer = await User.findById(order.user).select(
-        "name email phone mobile"
-      );
-    } else if (reqUser?._id && (!reqUser.name || !reqUser.email)) {
-      const dbUser = await User.findById(reqUser._id).select(
-        "name email phone mobile"
-      );
-      if (dbUser) customer = dbUser;
-    }
+// Helper: Notify admin by email in background (non-blocking so order submit never times out)
+const triggerAdminOrderEmail = (order, reqUser) => {
+  setImmediate(async () => {
+    try {
+      let customer = reqUser || null;
+      if (!customer && order?.user) {
+        customer = await User.findById(order.user).select(
+          "name email phone mobile"
+        );
+      } else if (reqUser?._id && (!reqUser.name || !reqUser.email)) {
+        const dbUser = await User.findById(reqUser._id).select(
+          "name email phone mobile"
+        );
+        if (dbUser) customer = dbUser;
+      }
 
-    await sendNewOrderEmailToAdmin({ order, customer });
-  } catch (emailErr) {
-    console.error("Admin order email error:", emailErr.message);
-  }
+      await sendNewOrderEmailToAdmin({ order, customer });
+    } catch (emailErr) {
+      console.error("Admin order email error:", emailErr.message);
+    }
+  });
 };
 
 // @desc    Create a direct / COD / ₹0 Free order
@@ -243,7 +246,7 @@ export const createOrder = async (req, res) => {
       stockDeducted: true,
     });
 
-    await triggerAdminOrderEmail(newOrder, req.user);
+    triggerAdminOrderEmail(newOrder, req.user);
 
     const io = req.app.get("io");
     if (io) {
@@ -394,7 +397,7 @@ export const verifyAndPlaceOrder = async (req, res) => {
       stockDeducted: true,
     });
 
-    await triggerAdminOrderEmail(newOrder, req.user);
+    triggerAdminOrderEmail(newOrder, req.user);
 
     const io = req.app.get("io");
     if (io) {
